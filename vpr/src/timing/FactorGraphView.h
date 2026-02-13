@@ -52,14 +52,28 @@ struct ProbTimingConfig {
     bool forced_binning = false; // Validation harness (forces all edges to bin 0)
 };
 
+struct MomentStats {
+    size_t num_max_calls_total = 0;
+    size_t num_max_calls_sigma_both_zero = 0;
+    size_t num_max_calls_sigma_one_zero = 0;
+    size_t num_max_calls_general = 0;
+
+    size_t num_min_calls_total = 0;
+};
+
 struct ProbTimingSummary {
     double worst_slack_95 = 0.0;
     int num_endpoints = 0;
+    tatum::NodeId worst_endpoint_node_id = tatum::NodeId::INVALID();
     double runtime_ms = 0.0;
     size_t num_interconnect_edges = 0;
     size_t num_weighted_edges = 0;
     size_t num_empty_weight_edges = 0;
+    MomentStats moments;
 };
+
+MomentStats get_moment_stats();
+void reset_moment_stats();
 
 struct FactorGraphView {
     // Core timing graph topology

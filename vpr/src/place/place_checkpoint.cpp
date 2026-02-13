@@ -40,7 +40,8 @@ void save_placement_checkpoint_if_needed(const vtr::vector_map<ClusterBlockId, t
     }
 }
 
-void restore_best_placement(PlacerState& placer_state,
+void restore_best_placement(const t_placer_opts& placer_opts,
+                            PlacerState& placer_state,
                             t_placement_checkpoint& placement_checkpoint,
                             std::shared_ptr<SetupTimingInfo>& timing_info,
                             t_placer_costs& costs,
@@ -63,8 +64,8 @@ void restore_best_placement(PlacerState& placer_state,
         //recompute timing from scratch
         placer_criticalities.get()->set_recompute_required();
         placer_setup_slacks.get()->set_recompute_required();
-        comp_td_connection_delays(place_delay_model.get(), placer_state);
-        perform_full_timing_update(crit_params,
+        perform_full_timing_update(placer_opts,
+                                   crit_params,
                                    place_delay_model.get(),
                                    placer_criticalities.get(),
                                    placer_setup_slacks.get(),

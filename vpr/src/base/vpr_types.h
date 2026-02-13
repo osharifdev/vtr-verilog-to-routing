@@ -997,6 +997,14 @@ struct t_placer_opts {
     /// When in CRITICALITY_TIMING_PLACE mode, what is the tradeoff between timing and wiring costs.
     float timing_tradeoff;
 
+    /// Probabilistic timing injection flags
+    bool prob_timing_inject;
+    std::string prob_inject_mode;
+    bool prob_timing_enable;
+    int prob_timing_mode;
+    float prob_timing_alpha;
+    float prob_timing_gamma;
+
     /// Weight for how much congestion affects placement cost.
     /// Higher means congestion is more important.
     float congestion_factor;

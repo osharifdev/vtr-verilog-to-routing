@@ -197,9 +197,15 @@ void Placer::alloc_and_init_timing_objects_(const Netlist<>& net_list,
     crit_params.crit_exponent = placer_opts_.td_place_exp_first;
     crit_params.crit_limit = placer_opts_.place_crit_limit;
 
-    initialize_timing_info(crit_params, place_delay_model_.get(), placer_criticalities_.get(),
-                           placer_setup_slacks_.get(), pin_timing_invalidator_.get(),
-                           timing_info_.get(), &costs_, placer_state_);
+    initialize_timing_info(placer_opts_,
+                           crit_params,
+                           place_delay_model_.get(),
+                           placer_criticalities_.get(),
+                           placer_setup_slacks_.get(),
+                           pin_timing_invalidator_.get(),
+                           timing_info_.get(),
+                           &costs_,
+                           placer_state_);
 
     critical_path_ = timing_info_->least_slack_critical_path();
 
@@ -340,9 +346,15 @@ void Placer::place() {
     crit_params.crit_limit = placer_opts_.place_crit_limit;
 
     if (placer_opts_.place_algorithm.is_timing_driven()) {
-        perform_full_timing_update(crit_params, place_delay_model_.get(), placer_criticalities_.get(),
-                                   placer_setup_slacks_.get(), pin_timing_invalidator_.get(),
-                                   timing_info_.get(), &costs_, placer_state_);
+        perform_full_timing_update(placer_opts_,
+                                   crit_params,
+                                   place_delay_model_.get(),
+                                   placer_criticalities_.get(),
+                                   placer_setup_slacks_.get(),
+                                   pin_timing_invalidator_.get(),
+                                   timing_info_.get(),
+                                   &costs_,
+                                   placer_state_);
 
         critical_path_ = timing_info_->least_slack_critical_path();
 
@@ -352,7 +364,8 @@ void Placer::place() {
 
     // See if our latest checkpoint is better than the current placement solution
     if (placer_opts_.place_checkpointing) {
-        restore_best_placement(placer_state_,
+        restore_best_placement(placer_opts_,
+                               placer_state_,
                                placement_checkpoint_, timing_info_, costs_,
                                placer_criticalities_, placer_setup_slacks_, place_delay_model_,
                                pin_timing_invalidator_, crit_params, noc_cost_handler_);

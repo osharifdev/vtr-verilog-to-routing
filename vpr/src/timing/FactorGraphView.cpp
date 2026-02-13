@@ -24,9 +24,31 @@ static double normal_cdf(double x) {
     return 0.5 * std::erfc(-x * 0.7071067811865476); // 1/sqrt(2)
 }
 
+static MomentStats g_moment_stats;
+
+void reset_moment_stats() {
+    g_moment_stats = MomentStats();
+}
+
+MomentStats get_moment_stats() {
+    return g_moment_stats;
+}
+
 static GaussianMoments max_gaussian_moments(GaussianMoments a, GaussianMoments b) {
+    g_moment_stats.num_max_calls_total++;
     if (!a.is_set()) return b;
     if (!b.is_set()) return a;
+
+    if (a.var <= 0.0 && b.var <= 0.0) {
+        g_moment_stats.num_max_calls_sigma_both_zero++;
+        return (a.mu > b.mu) ? a : b;
+    }
+
+    if (a.var <= 0.0 || b.var <= 0.0) {
+        g_moment_stats.num_max_calls_sigma_one_zero++;
+    } else {
+        g_moment_stats.num_max_calls_general++;
+    }
 
     double var_diff = a.var + b.var;
     double delta = std::sqrt(std::max(1e-24, var_diff));
@@ -53,6 +75,7 @@ static GaussianMoments max_gaussian_moments(GaussianMoments a, GaussianMoments b
 }
 
 static GaussianMoments min_gaussian_moments(GaussianMoments a, GaussianMoments b) {
+    g_moment_stats.num_min_calls_total++;
     // min(X, Y) = -max(-X, -Y)
     GaussianMoments neg_a = {-a.mu, a.var};
     GaussianMoments neg_b = {-b.mu, b.var};
@@ -540,6 +563,7 @@ ProbTimingSummary run_probabilistic_timing(FactorGraphView& fg,
     ProbTimingSummary summary;
     summary.worst_slack_95 = worst_S95;
     summary.num_endpoints = endpoint_count;
+    summary.worst_endpoint_node_id = worst_node;
     summary.runtime_ms = duration;
     // Let's count weighted vs empty from bin_state
     size_t n_weighted = 0;
@@ -557,6 +581,7 @@ ProbTimingSummary run_probabilistic_timing(FactorGraphView& fg,
     summary.num_interconnect_edges = n_inter;
     summary.num_weighted_edges = n_weighted;
     summary.num_empty_weight_edges = n_empty;
+    summary.moments = g_moment_stats;
 
     return summary;
 }

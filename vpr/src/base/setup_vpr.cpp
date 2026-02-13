@@ -729,6 +729,13 @@ static void setup_placer_opts(const t_options& Options, t_placer_opts* PlacerOpt
     PlacerOpts->placer_debug_block = Options.placer_debug_block;
     PlacerOpts->placer_debug_net = Options.placer_debug_net;
 
+    PlacerOpts->prob_timing_inject = Options.prob_timing_inject;
+    PlacerOpts->prob_inject_mode = Options.prob_inject_mode;
+    PlacerOpts->prob_timing_enable = Options.prob_timing_enable;
+    PlacerOpts->prob_timing_mode = Options.prob_timing_mode;
+    PlacerOpts->prob_timing_alpha = Options.prob_timing_alpha;
+    PlacerOpts->prob_timing_gamma = Options.prob_timing_gamma;
+
     PlacerOpts->place_auto_init_t_scale = Options.place_auto_init_t_scale.value();
     PlacerOpts->anneal_init_t_estimator = Options.place_init_t_estimator.value();
 }

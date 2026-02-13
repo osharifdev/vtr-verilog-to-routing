@@ -866,6 +866,9 @@ bool vpr_place_flow(const Netlist<>& net_list,
                              g_vpr_ctx.clustering().atoms_lookup);
     }
 
+    extern void finish_prob_inject_step1_audit(const std::string& circuit_name, int seed);
+    finish_prob_inject_step1_audit(filename_opts.CircuitName, placer_opts.seed);
+
     return true;
 }
 

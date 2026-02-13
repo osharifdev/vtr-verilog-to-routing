@@ -2300,6 +2300,30 @@ argparse::ArgumentParser create_arg_parser(const std::string& prog_name, t_optio
         .default_value("1")
         .show_in(argparse::ShowIn::HELP_ONLY);
 
+    place_grp.add_argument<bool, ParseOnOff>(args.prob_timing_inject, "--prob_timing_inject")
+        .help("Enable probabilistic timing injection during placement")
+        .default_value("off");
+
+    place_grp.add_argument<std::string>(args.prob_inject_mode, "--prob_inject_mode")
+        .help("Mode for probabilistic timing injection")
+        .default_value("noop");
+
+    place_grp.add_argument<bool, ParseOnOff>(args.prob_timing_enable, "--prob_timing_enable")
+        .help("Enable probabilistic timing analysis (Step 2 Proof)")
+        .default_value("off");
+
+    place_grp.add_argument<int>(args.prob_timing_mode, "--prob_timing_mode")
+        .help("Mode for probabilistic timing analysis")
+        .default_value("0");
+
+    place_grp.add_argument<float>(args.prob_timing_alpha, "--prob_timing_alpha")
+        .help("Alpha parameter for probabilistic timing")
+        .default_value("0.0");
+
+    place_grp.add_argument<float>(args.prob_timing_gamma, "--prob_timing_gamma")
+        .help("Gamma parameter for probabilistic timing")
+        .default_value("0.0");
+
     place_grp.add_argument<e_place_delta_delay_algorithm, ParsePlaceDeltaDelayAlgorithm>(
                  args.place_delta_delay_matrix_calculation_method,
                  "--place_delta_delay_matrix_calculation_method")

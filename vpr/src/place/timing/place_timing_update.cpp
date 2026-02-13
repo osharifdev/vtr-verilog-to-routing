@@ -19,6 +19,63 @@
 #include "timing_info.h"
 #include "vtr_log.h"
 #include "FactorGraphView.h"
+#include <vector>
+#include <cmath>
+#include <string>
+#include <memory>
+#include <algorithm>
+#include "vtr_hash.h"
+
+struct ProbInjectStep1Event {
+    size_t update_id;
+    bool inject;
+    double before;
+    double after;
+    double delta;
+};
+static std::vector<ProbInjectStep1Event> g_prob_inject_step1_audit;
+static size_t g_num_timing_updates_seen = 0;
+static size_t g_num_injection_updates_seen = 0;
+
+struct ProbStep2Event {
+    ProbStep2Event(size_t uid, double dWNS, double dCPD, int dWEP, double dWEPS,
+                   double pWNS, int pWEP, double abs_err, bool same, int eps,
+                   size_t ephash, int n12, int n15,
+                   const MomentStats& mm,
+                   double rt, double tcb, double tca, double dc) noexcept
+        : update_id(uid), det_WNS_s(dWNS), det_CPD_s(dCPD), det_worst_ep(dWEP),
+          det_worst_ep_slack_s(dWEPS), prob_WorstSlack95_s(pWNS), prob_worst_ep(pWEP),
+          abs_err_WNS_s(abs_err), same_worst_ep(same), endpoints(eps),
+          endpoint_hash(ephash), num_eps12(n12), num_eps15(n15), moments(mm),
+          runtime_ms_prob(rt), timing_cost_before(tcb), timing_cost_after(tca), delta_cost(dc) {}
+
+    size_t update_id;
+    double det_WNS_s;
+    double det_CPD_s;
+    int det_worst_ep;
+    double det_worst_ep_slack_s;
+    double prob_WorstSlack95_s;
+    int prob_worst_ep;
+    double abs_err_WNS_s;
+    bool same_worst_ep;
+    int endpoints;
+    size_t endpoint_hash;
+    int num_eps12;
+    int num_eps15;
+    MomentStats moments;
+    double runtime_ms_prob;
+    double timing_cost_before;
+    double timing_cost_after;
+    double delta_cost;
+};
+static std::vector<ProbStep2Event> g_prob_step2_audit;
+static double g_step2_max_abs_err_wns = 0.0;
+static double g_step2_sum_abs_err_wns = 0.0;
+static size_t g_step2_worst_ep_mismatch_count = 0;
+static double g_step2_noop_delta_cost_max_abs = 0.0;
+
+static std::unique_ptr<FactorGraphView> g_fg_view;
+static BinState g_bin_state;
 
 /* Routines local to place_timing_update.cpp */
 static double comp_td_connection_cost(const PlaceDelayModel* delay_model,
@@ -41,7 +98,8 @@ static constexpr bool INCR_COMP_TD_COSTS = true;
  * Perform first time update on the timing graph, and initialize the values within
  * PlacerCriticalities, PlacerSetupSlacks, and connection_timing_cost.
  */
-void initialize_timing_info(const PlaceCritParams& crit_params,
+void initialize_timing_info(const t_placer_opts& placer_opts,
+                            const PlaceCritParams& crit_params,
                             const PlaceDelayModel* delay_model,
                             PlacerCriticalities* criticalities,
                             PlacerSetupSlacks* setup_slacks,
@@ -62,7 +120,8 @@ void initialize_timing_info(const PlaceCritParams& crit_params,
     }
 
     //Perform first time update for all timing related classes
-    perform_full_timing_update(crit_params,
+    perform_full_timing_update(placer_opts,
+                               crit_params,
                                delay_model,
                                criticalities,
                                setup_slacks,
@@ -91,7 +150,8 @@ void initialize_timing_info(const PlaceCritParams& crit_params,
  * Updates: SetupTimingInfo, PlacerCriticalities, PlacerSetupSlacks,
  *          timing_cost, connection_setup_slack.
  */
-void perform_full_timing_update(const PlaceCritParams& crit_params,
+void perform_full_timing_update(const t_placer_opts& placer_opts,
+                                const PlaceCritParams& crit_params,
                                 const PlaceDelayModel* delay_model,
                                 PlacerCriticalities* criticalities,
                                 PlacerSetupSlacks* setup_slacks,
@@ -217,8 +277,145 @@ void perform_full_timing_update(const PlaceCritParams& crit_params,
                        &costs->timing_cost);
 
     // PROB_TIMING_INJECTION_POINT (disabled)
-    // In the future, costs->timing_cost may be overridden
-    // using ProbTimingSummary::worst_slack_95
+    {
+        double timing_cost_before = costs->timing_cost;
+        bool inject_enabled = placer_opts.prob_timing_inject;
+        std::string mode = placer_opts.prob_inject_mode;
+
+        g_num_timing_updates_seen++;
+
+        if (g_num_timing_updates_seen == 1) {
+            VTR_LOG("PROB_INJECT_STEP1_CONFIG: inject_default=off inject_flag=%s inject_mode=%s git_commit=de3a5c01e\n",
+                    inject_enabled ? "on" : "off", mode.c_str());
+        }
+
+        double timing_cost_after = timing_cost_before;
+        if (inject_enabled && mode == "noop") {
+            g_num_injection_updates_seen++;
+            timing_cost_after = timing_cost_before;
+            costs->timing_cost = timing_cost_after;
+
+            double delta = timing_cost_after - timing_cost_before;
+
+            VTR_LOG("PROB_INJECT_STEP1: update_id=%zu inject=%d mode=noop before=%.15g after=%.15g delta=%.15g\n",
+                    g_num_timing_updates_seen, (int)inject_enabled, timing_cost_before, timing_cost_after, delta);
+
+            if (std::abs(delta) > 1e-15) {
+#ifdef NDEBUG
+                VTR_LOG_ERROR("PROB_INJECT_STEP1: Invariant G3 violation! delta=%.15g\n", delta);
+#else
+                VTR_ASSERT_MSG(std::abs(delta) <= 1e-15, "PROB_INJECT_STEP1: Invariant G3 violation!");
+#endif
+            }
+            g_step2_noop_delta_cost_max_abs = std::max(g_step2_noop_delta_cost_max_abs, std::abs(delta));
+            g_prob_inject_step1_audit.push_back({g_num_timing_updates_seen, inject_enabled, timing_cost_before, timing_cost_after, delta});
+        } else if (!inject_enabled) {
+            g_prob_inject_step1_audit.push_back({g_num_timing_updates_seen, inject_enabled, timing_cost_before, timing_cost_before, 0.0});
+        }
+
+        // --- PHASE 15 STEP 2: PROOF OF COLLAPSE ---
+        if (placer_opts.prob_timing_enable) {
+            // 1. Get Deterministic Reference
+            float det_WNS_s = timing_info->setup_worst_negative_slack();
+            float det_CPD_s = timing_info->least_slack_critical_path().delay().value();
+            
+            const auto& tg = *timing_info->timing_graph();
+            const auto* analyzer = timing_info->setup_analyzer().get();
+            tatum::NodeId det_worst_node = tatum::NodeId::INVALID();
+            float min_slack = std::numeric_limits<float>::infinity();
+
+            std::vector<tatum::NodeId> endpoints;
+            for (auto node_id : tg.nodes()) {
+                auto slacks = analyzer->setup_slacks(node_id);
+                if (!slacks.empty()) {
+                    endpoints.push_back(node_id);
+                    float s = tatum::find_minimum_tag(slacks)->time().value();
+                    if (s < min_slack) {
+                        min_slack = s;
+                        det_worst_node = node_id;
+                    }
+                }
+            }
+            std::sort(endpoints.begin(), endpoints.end());
+
+            size_t ephash = 0;
+            for (auto node_id : endpoints) {
+                vtr::hash_combine(ephash, (size_t)node_id);
+            }
+
+            // G1 Check: verify det_WNS_s matches min_slack
+            double wns_ref_err = std::abs((double)det_WNS_s - (double)min_slack);
+            if (wns_ref_err > 1e-12) {
+                VTR_LOG("PROB_STEP2_SANITY_ERROR: Deterministic WNS ref mismatch! det_WNS_s=%.15g min_slack=%.15g err=%.15g\n",
+                        (double)det_WNS_s, (double)min_slack, wns_ref_err);
+            }
+
+            // Tie Analysis
+            int num_eps12 = 0;
+            int num_eps15 = 0;
+            for (auto node_id : endpoints) {
+                float s = tatum::find_minimum_tag(analyzer->setup_slacks(node_id))->time().value();
+                if (s <= min_slack + 1e-12) num_eps12++;
+                if (s <= min_slack + 1e-15) num_eps15++;
+            }
+
+            // 2. Run Probabilistic Analysis (Collapse Mode)
+            if (!g_fg_view) {
+                g_fg_view = std::make_unique<FactorGraphView>(build_factor_graph_view(tg));
+            }
+
+            ProbTimingConfig config;
+            // Map int to UncertaintyMode
+            config.mode = (UncertaintyMode)placer_opts.prob_timing_mode;
+            config.alpha = placer_opts.prob_timing_alpha;
+            config.gamma = placer_opts.prob_timing_gamma;
+
+            reset_moment_stats();
+            update_bin_state(*g_fg_view, g_bin_state, config);
+            auto summary = run_probabilistic_timing(*g_fg_view, tg, *analyzer, *timing_info->delay_calculator(), g_bin_state, config);
+
+            double prob_WNS_s = summary.worst_slack_95;
+            tatum::NodeId prob_worst_node = summary.worst_endpoint_node_id;
+
+            double abs_err = std::abs(det_WNS_s - prob_WNS_s);
+            bool same_ep = (det_worst_node == prob_worst_node);
+
+            // G3: Tie Explanation
+            if (!same_ep) {
+                VTR_LOG("PROB_STEP2_MISMATCH: update_id=%zu det_worst_ep=%zu (slack=%.15g) prob_worst_ep=%zu (slack95=%.15g) num_eps12=%d num_eps15=%d\n",
+                        g_num_timing_updates_seen, (size_t)det_worst_node, (double)min_slack, (size_t)prob_worst_node, (double)prob_WNS_s, num_eps12, num_eps15);
+                if (num_eps12 <= 1) {
+                    VTR_LOG("PROB_STEP2_SUSPICIOUS: Mismatch with NO TIES! eps12=%d\n", num_eps12);
+                }
+            }
+
+            // Logging
+            VTR_LOG("PROB_STEP2_SANITY: update_id=%zu mode=%d alpha=%g gamma=%g det_WNS_s=%.15g prob_WorstSlack95_s=%.15g abs_err_WNS_s=%.15g same_worst_ep=%d endpoints=%d ephash=%zu num_eps12=%d num_eps15=%d moments_total=%zu moments_deg=%zu\n",
+                    g_num_timing_updates_seen, (int)config.mode, config.alpha, config.gamma,
+                    (double)det_WNS_s, (double)prob_WNS_s, abs_err, (int)same_ep, (int)summary.num_endpoints, ephash, num_eps12, num_eps15,
+                    summary.moments.num_max_calls_total, summary.moments.num_max_calls_sigma_both_zero);
+
+            // Invariants
+            g_step2_max_abs_err_wns = std::max(g_step2_max_abs_err_wns, abs_err);
+            g_step2_sum_abs_err_wns += abs_err;
+            if (!same_ep) g_step2_worst_ep_mismatch_count++;
+
+            bool params_are_zero = (config.alpha == 0.0f && config.gamma == 0.0f);
+            if (params_are_zero && abs_err > 1e-12) {
+                VTR_LOG("PROB_STEP2_ERROR: collapse mismatch abs_err=%.15g\n", abs_err);
+                VTR_ASSERT_MSG(abs_err <= 1e-12, "PROB_STEP2: Collapse mismatch violation!");
+            }
+
+            // Audit
+            g_prob_step2_audit.emplace_back(
+                g_num_timing_updates_seen,
+                (double)det_WNS_s, (double)det_CPD_s, (int)size_t(det_worst_node), (double)min_slack,
+                prob_WNS_s, (int)size_t(prob_worst_node), abs_err, same_ep, (int)summary.num_endpoints,
+                ephash, num_eps12, num_eps15, summary.moments,
+                summary.runtime_ms, timing_cost_before, timing_cost_after, timing_cost_after - timing_cost_before
+            );
+        }
+    }
 
     /* Commit the setup slacks since they are updated. */
     commit_setup_slacks(setup_slacks, placer_state);
@@ -519,4 +716,63 @@ static double sum_td_costs(const PlacerState& placer_state) {
     }
 
     return td_cost;
+}
+
+void finish_prob_inject_step1_audit(const std::string& circuit_name, int seed) {
+    VTR_LOG("PROB_INJECT_STEP1_SUMMARY: timing_updates_seen=%zu injection_updates_seen=%zu\n",
+            g_num_timing_updates_seen, g_num_injection_updates_seen);
+
+    // --- STEP 1 CSV ---
+    {
+        std::string csv_filename = "prob_inject_step1_" + circuit_name + "_" + std::to_string(seed) + ".csv";
+        VTR_LOG("Writing Phase 15 Step 1 audit trail to %s...\n", csv_filename.c_str());
+
+        FILE* fp = fopen(csv_filename.c_str(), "w");
+        if (fp) {
+            fprintf(fp, "update_id,inject,before,after,delta\n");
+            for (const auto& event : g_prob_inject_step1_audit) {
+                fprintf(fp, "%zu,%d,%.15g,%.15g,%.15g\n",
+                        event.update_id, (int)event.inject, event.before, event.after, event.delta);
+            }
+            fclose(fp);
+        } else {
+            VTR_LOG_ERROR("Failed to open audit file %s for writing\n", csv_filename.c_str());
+        }
+    }
+
+    // --- STEP 2 SUMMARY & CSV ---
+    if (!g_prob_step2_audit.empty()) {
+        double mean_err = (g_prob_step2_audit.empty()) ? 0.0 : g_step2_sum_abs_err_wns / g_prob_step2_audit.size();
+        
+        VTR_LOG("PROB_STEP2_SUMMARY:\n");
+        VTR_LOG("  updates=%zu\n", g_prob_step2_audit.size());
+        VTR_LOG("  max_abs_err_WNS_s=%.15g\n", g_step2_max_abs_err_wns);
+        VTR_LOG("  mean_abs_err_WNS_s=%.15g\n", mean_err);
+        VTR_LOG("  endpoints_last=%d\n", g_prob_step2_audit.empty() ? 0 : g_prob_step2_audit.back().endpoints);
+        VTR_LOG("  worst_ep_mismatch_count=%zu\n", g_step2_worst_ep_mismatch_count);
+        VTR_LOG("  noop_delta_cost_max_abs=%.15g\n", g_step2_noop_delta_cost_max_abs);
+        VTR_LOG("  prob_enable=1\n");
+        VTR_LOG("  mode=0 alpha=0 gamma=0\n");
+
+        std::string csv_filename = "prob_step2_collapse_" + circuit_name + "_" + std::to_string(seed) + ".csv";
+        VTR_LOG("Writing Phase 15 Step 2 audit trail to %s...\n", csv_filename.c_str());
+
+        FILE* fp = fopen(csv_filename.c_str(), "w");
+        if (fp) {
+            fprintf(fp, "update_id,det_WNS_s,det_CPD_s,det_worst_ep,det_worst_ep_slack_s,prob_WorstSlack95_s,prob_worst_ep,abs_err_WNS_s,same_worst_ep,endpoints,ephash,num_eps12,num_eps15,mom_total,mom_both0,mom_one0,mom_gen,mom_min,runtime_ms_prob,timing_cost_before,timing_cost_after,delta_cost\n");
+            for (const auto& ev : g_prob_step2_audit) {
+                fprintf(fp, "%zu,%.15g,%.15g,%d,%.15g,%.15g,%d,%.15g,%d,%d,%zu,%d,%d,%zu,%zu,%zu,%zu,%zu,%.2f,%.15g,%.15g,%.15g\n",
+                        ev.update_id, ev.det_WNS_s, ev.det_CPD_s, ev.det_worst_ep, ev.det_worst_ep_slack_s,
+                        ev.prob_WorstSlack95_s, ev.prob_worst_ep, ev.abs_err_WNS_s, (int)ev.same_worst_ep,
+                        ev.endpoints, ev.endpoint_hash, ev.num_eps12, ev.num_eps15,
+                        ev.moments.num_max_calls_total, ev.moments.num_max_calls_sigma_both_zero,
+                        ev.moments.num_max_calls_sigma_one_zero, ev.moments.num_max_calls_general,
+                        ev.moments.num_min_calls_total,
+                        ev.runtime_ms_prob, ev.timing_cost_before, ev.timing_cost_after, ev.delta_cost);
+            }
+            fclose(fp);
+        } else {
+            VTR_LOG_ERROR("Failed to open audit file %s for writing\n", csv_filename.c_str());
+        }
+    }
 }

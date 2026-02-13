@@ -808,7 +808,11 @@ void PlacementAnnealer::outer_loop_update_timing_info() {
                                         placer_opts_.place_crit_limit};
 
             // Update all timing related classes
-            perform_full_timing_update(crit_params, delay_model_, criticalities_, setup_slacks_,
+            perform_full_timing_update(placer_opts_,
+                                       crit_params,
+                                       delay_model_,
+                                       criticalities_,
+                                       setup_slacks_,
                                        pin_timing_invalidator_, timing_info_, &costs_, placer_state_);
 
             outer_crit_iter_count_ = 0;
@@ -890,7 +894,8 @@ void PlacementAnnealer::placement_inner_loop() {
                                             placer_opts_.place_crit_limit};
 
                 // Update all timing related classes
-                perform_full_timing_update(crit_params, delay_model_, criticalities_,
+                perform_full_timing_update(placer_opts_,
+                                           crit_params, delay_model_, criticalities_,
                                            setup_slacks_, pin_timing_invalidator_,
                                            timing_info_, &costs_, placer_state_);
             }

@@ -86,6 +86,12 @@ struct t_options {
     argparse::ArgValue<std::string> suppress_warnings;
     argparse::ArgValue<bool> allow_dangling_combinational_nodes;
     argparse::ArgValue<bool> terminate_if_timing_fails;
+    argparse::ArgValue<bool> prob_timing_inject;
+    argparse::ArgValue<std::string> prob_inject_mode;
+    argparse::ArgValue<bool> prob_timing_enable;
+    argparse::ArgValue<int> prob_timing_mode;
+    argparse::ArgValue<float> prob_timing_alpha;
+    argparse::ArgValue<float> prob_timing_gamma;
 
     // Server options
     argparse::ArgValue<bool> is_server_mode_enabled;
