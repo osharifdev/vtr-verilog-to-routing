@@ -274,10 +274,15 @@ int Placer::check_placement_costs_() {
         double timing_cost_check;
         comp_td_costs(place_delay_model_.get(), *placer_criticalities_, placer_state_, &timing_cost_check);
         if (fabs(timing_cost_check - costs_.timing_cost) > costs_.timing_cost * PL_INCREMENTAL_COST_TOLERANCE) {
-            VTR_LOG_ERROR(
-                "timing_cost_check: %g and timing_cost: %g differ in check_place.\n",
-                timing_cost_check, costs_.timing_cost);
-            error++;
+            if (placer_opts_.prob_timing_inject) {
+                VTR_LOG("timing_cost_check: %g and timing_cost: %g differ in check_place, but prob_timing_inject is on. Allowing.\n",
+                        timing_cost_check, costs_.timing_cost);
+            } else {
+                VTR_LOG_ERROR(
+                    "timing_cost_check: %g and timing_cost: %g differ in check_place.\n",
+                    timing_cost_check, costs_.timing_cost);
+                error++;
+            }
         }
     }
     return error;

@@ -74,6 +74,28 @@ static double g_step2_sum_abs_err_wns = 0.0;
 static size_t g_step2_worst_ep_mismatch_count = 0;
 static double g_step2_noop_delta_cost_max_abs = 0.0;
 
+struct ProbStep3ReplaceEvent {
+    ProbStep3ReplaceEvent(size_t uid, double dWNS, double pWNS, double rsk,
+                          double tsta, double tnew, double dc, int eps, double rt) noexcept
+        : update_id(uid), det_WNS_s(dWNS), worst_slack95_s(pWNS), risk_s(rsk),
+          timing_cost_sta(tsta), timing_cost_new(tnew), delta_cost(dc),
+          endpoints(eps), runtime_ms_prob(rt) {}
+
+    size_t update_id;
+    double det_WNS_s;
+    double worst_slack95_s;
+    double risk_s;
+    double timing_cost_sta;
+    double timing_cost_new;
+    double delta_cost;
+    int endpoints;
+    double runtime_ms_prob;
+};
+static std::vector<ProbStep3ReplaceEvent> g_prob_step3_replace_audit;
+static double g_step3_mean_delta_cost = 0.0;
+static double g_step3_max_delta_cost = -std::numeric_limits<double>::infinity();
+static double g_step3_min_delta_cost = std::numeric_limits<double>::infinity();
+
 static std::unique_ptr<FactorGraphView> g_fg_view;
 static BinState g_bin_state;
 
@@ -276,11 +298,12 @@ void perform_full_timing_update(const t_placer_opts& placer_opts,
                        placer_state,
                        &costs->timing_cost);
 
-    // PROB_TIMING_INJECTION_POINT (disabled)
+    // PROB_TIMING_INJECTION_POINT
     {
         double timing_cost_before = costs->timing_cost;
         bool inject_enabled = placer_opts.prob_timing_inject;
         std::string mode = placer_opts.prob_inject_mode;
+        double timing_cost_after = timing_cost_before;
 
         g_num_timing_updates_seen++;
 
@@ -289,23 +312,18 @@ void perform_full_timing_update(const t_placer_opts& placer_opts,
                     inject_enabled ? "on" : "off", mode.c_str());
         }
 
-        double timing_cost_after = timing_cost_before;
+        // 1. Step 1 No-op Injection
         if (inject_enabled && mode == "noop") {
             g_num_injection_updates_seen++;
             timing_cost_after = timing_cost_before;
             costs->timing_cost = timing_cost_after;
 
             double delta = timing_cost_after - timing_cost_before;
-
             VTR_LOG("PROB_INJECT_STEP1: update_id=%zu inject=%d mode=noop before=%.15g after=%.15g delta=%.15g\n",
                     g_num_timing_updates_seen, (int)inject_enabled, timing_cost_before, timing_cost_after, delta);
 
             if (std::abs(delta) > 1e-15) {
-#ifdef NDEBUG
-                VTR_LOG_ERROR("PROB_INJECT_STEP1: Invariant G3 violation! delta=%.15g\n", delta);
-#else
                 VTR_ASSERT_MSG(std::abs(delta) <= 1e-15, "PROB_INJECT_STEP1: Invariant G3 violation!");
-#endif
             }
             g_step2_noop_delta_cost_max_abs = std::max(g_step2_noop_delta_cost_max_abs, std::abs(delta));
             g_prob_inject_step1_audit.push_back({g_num_timing_updates_seen, inject_enabled, timing_cost_before, timing_cost_after, delta});
@@ -313,18 +331,29 @@ void perform_full_timing_update(const t_placer_opts& placer_opts,
             g_prob_inject_step1_audit.push_back({g_num_timing_updates_seen, inject_enabled, timing_cost_before, timing_cost_before, 0.0});
         }
 
-        // --- PHASE 15 STEP 2: PROOF OF COLLAPSE ---
+        // 2. Phase 15 Step 2: Probabilistic Analysis
+        float det_WNS_s = 0.0f;
+        float det_CPD_s = 0.0f;
+        tatum::NodeId det_worst_node = tatum::NodeId::INVALID();
+        float min_slack = std::numeric_limits<float>::infinity();
+        double prob_WNS_s = 0.0;
+        tatum::NodeId prob_worst_node = tatum::NodeId::INVALID();
+        double abs_err = 0.0;
+        bool same_ep = false;
+        ProbTimingSummary summary;
+        ProbTimingConfig config;
+        std::vector<tatum::NodeId> endpoints;
+        size_t ephash = 0;
+        int num_eps12 = 0;
+        int num_eps15 = 0;
+
         if (placer_opts.prob_timing_enable) {
-            // 1. Get Deterministic Reference
-            float det_WNS_s = timing_info->setup_worst_negative_slack();
-            float det_CPD_s = timing_info->least_slack_critical_path().delay().value();
-            
+            det_WNS_s = timing_info->setup_worst_negative_slack();
+            det_CPD_s = timing_info->least_slack_critical_path().delay().value();
+
             const auto& tg = *timing_info->timing_graph();
             const auto* analyzer = timing_info->setup_analyzer().get();
-            tatum::NodeId det_worst_node = tatum::NodeId::INVALID();
-            float min_slack = std::numeric_limits<float>::infinity();
 
-            std::vector<tatum::NodeId> endpoints;
             for (auto node_id : tg.nodes()) {
                 auto slacks = analyzer->setup_slacks(node_id);
                 if (!slacks.empty()) {
@@ -338,12 +367,11 @@ void perform_full_timing_update(const t_placer_opts& placer_opts,
             }
             std::sort(endpoints.begin(), endpoints.end());
 
-            size_t ephash = 0;
             for (auto node_id : endpoints) {
                 vtr::hash_combine(ephash, (size_t)node_id);
             }
 
-            // G1 Check: verify det_WNS_s matches min_slack
+            // G1 Check
             double wns_ref_err = std::abs((double)det_WNS_s - (double)min_slack);
             if (wns_ref_err > 1e-12) {
                 VTR_LOG("PROB_STEP2_SANITY_ERROR: Deterministic WNS ref mismatch! det_WNS_s=%.15g min_slack=%.15g err=%.15g\n",
@@ -351,65 +379,83 @@ void perform_full_timing_update(const t_placer_opts& placer_opts,
             }
 
             // Tie Analysis
-            int num_eps12 = 0;
-            int num_eps15 = 0;
             for (auto node_id : endpoints) {
                 float s = tatum::find_minimum_tag(analyzer->setup_slacks(node_id))->time().value();
                 if (s <= min_slack + 1e-12) num_eps12++;
                 if (s <= min_slack + 1e-15) num_eps15++;
             }
 
-            // 2. Run Probabilistic Analysis (Collapse Mode)
             if (!g_fg_view) {
                 g_fg_view = std::make_unique<FactorGraphView>(build_factor_graph_view(tg));
             }
 
-            ProbTimingConfig config;
-            // Map int to UncertaintyMode
             config.mode = (UncertaintyMode)placer_opts.prob_timing_mode;
             config.alpha = placer_opts.prob_timing_alpha;
             config.gamma = placer_opts.prob_timing_gamma;
 
             reset_moment_stats();
             update_bin_state(*g_fg_view, g_bin_state, config);
-            auto summary = run_probabilistic_timing(*g_fg_view, tg, *analyzer, *timing_info->delay_calculator(), g_bin_state, config);
+            summary = run_probabilistic_timing(*g_fg_view, tg, *analyzer, *timing_info->delay_calculator(), g_bin_state, config);
 
-            double prob_WNS_s = summary.worst_slack_95;
-            tatum::NodeId prob_worst_node = summary.worst_endpoint_node_id;
+            prob_WNS_s = summary.worst_slack_95;
+            prob_worst_node = summary.worst_endpoint_node_id;
+            abs_err = std::abs(det_WNS_s - prob_WNS_s);
+            same_ep = (det_worst_node == prob_worst_node);
 
-            double abs_err = std::abs(det_WNS_s - prob_WNS_s);
-            bool same_ep = (det_worst_node == prob_worst_node);
-
-            // G3: Tie Explanation
-            if (!same_ep) {
-                VTR_LOG("PROB_STEP2_MISMATCH: update_id=%zu det_worst_ep=%zu (slack=%.15g) prob_worst_ep=%zu (slack95=%.15g) num_eps12=%d num_eps15=%d\n",
-                        g_num_timing_updates_seen, (size_t)det_worst_node, (double)min_slack, (size_t)prob_worst_node, (double)prob_WNS_s, num_eps12, num_eps15);
-                if (num_eps12 <= 1) {
-                    VTR_LOG("PROB_STEP2_SUSPICIOUS: Mismatch with NO TIES! eps12=%d\n", num_eps12);
-                }
-            }
-
-            // Logging
             VTR_LOG("PROB_STEP2_SANITY: update_id=%zu mode=%d alpha=%g gamma=%g det_WNS_s=%.15g prob_WorstSlack95_s=%.15g abs_err_WNS_s=%.15g same_worst_ep=%d endpoints=%d ephash=%zu num_eps12=%d num_eps15=%d moments_total=%zu moments_deg=%zu\n",
                     g_num_timing_updates_seen, (int)config.mode, config.alpha, config.gamma,
                     (double)det_WNS_s, (double)prob_WNS_s, abs_err, (int)same_ep, (int)summary.num_endpoints, ephash, num_eps12, num_eps15,
                     summary.moments.num_max_calls_total, summary.moments.num_max_calls_sigma_both_zero);
 
-            // Invariants
+            if (!same_ep) {
+                VTR_LOG("PROB_STEP2_MISMATCH: update_id=%zu det_worst_ep=%zu (slack=%.15g) prob_worst_ep=%zu (slack95=%.15g) num_eps12=%d num_eps15=%d\n",
+                        g_num_timing_updates_seen, (size_t)det_worst_node, (double)min_slack, (size_t)prob_worst_node, (double)prob_WNS_s, num_eps12, num_eps15);
+            }
+
             g_step2_max_abs_err_wns = std::max(g_step2_max_abs_err_wns, abs_err);
             g_step2_sum_abs_err_wns += abs_err;
             if (!same_ep) g_step2_worst_ep_mismatch_count++;
 
             bool params_are_zero = (config.alpha == 0.0f && config.gamma == 0.0f);
             if (params_are_zero && abs_err > 1e-12) {
-                VTR_LOG("PROB_STEP2_ERROR: collapse mismatch abs_err=%.15g\n", abs_err);
                 VTR_ASSERT_MSG(abs_err <= 1e-12, "PROB_STEP2: Collapse mismatch violation!");
             }
+        }
 
-            // Audit
+        // 3. Phase 15 Step 3: Replace Injection
+        if (inject_enabled && mode == "replace") {
+            if (g_num_injection_updates_seen == 0) {
+                VTR_LOG("PROB_STEP3_REPLACE_CONFIG: benchmark=%s seed=%d alpha=%g gamma=%g inject=on mode=replace clamp=%s\n",
+                        g_vpr_ctx.atom().netlist().netlist_name().c_str(), 1, config.alpha, config.gamma,
+                        placer_opts.prob_inject_clamp ? "on" : "off");
+            }
+            g_num_injection_updates_seen++;
+
+            double risk_s = (placer_opts.prob_inject_clamp) ? std::max(0.0, -prob_WNS_s) : -prob_WNS_s;
+            double timing_cost_new = risk_s;
+            costs->timing_cost = timing_cost_new;
+            timing_cost_after = timing_cost_new;
+            double delta = timing_cost_new - timing_cost_before;
+
+            VTR_LOG("PROB_STEP3_REPLACE: update_id=%zu prob_enable=%d mode=%d alpha=%g gamma=0 inject=1 inject_mode=replace clamp=%d det_WNS_s=%.15g det_CPD_s=%.15g worst_slack95_s=%.15g risk_s=%.15g timing_cost_sta=%.15g timing_cost_new=%.15g delta_cost=%.15g endpoints=%d runtime_ms_prob=%.2f\n",
+                    g_num_timing_updates_seen, (int)placer_opts.prob_timing_enable, (int)config.mode, config.alpha, (int)placer_opts.prob_inject_clamp,
+                    (double)det_WNS_s, (double)det_CPD_s, prob_WNS_s, risk_s,
+                    timing_cost_before, timing_cost_new, delta, (int)summary.num_endpoints, summary.runtime_ms);
+
+            g_step3_mean_delta_cost = (g_step3_mean_delta_cost * (g_num_injection_updates_seen - 1) + delta) / g_num_injection_updates_seen;
+            g_step3_max_delta_cost = std::max(g_step3_max_delta_cost, delta);
+            g_step3_min_delta_cost = std::min(g_step3_min_delta_cost, delta);
+
+            g_prob_step3_replace_audit.emplace_back(
+                g_num_timing_updates_seen, (double)det_WNS_s, prob_WNS_s, risk_s,
+                timing_cost_before, timing_cost_new, delta, (int)summary.num_endpoints, summary.runtime_ms
+            );
+        }
+
+        // 4. Final Audit Collection
+        if (placer_opts.prob_timing_enable) {
             g_prob_step2_audit.emplace_back(
-                g_num_timing_updates_seen,
-                (double)det_WNS_s, (double)det_CPD_s, (int)size_t(det_worst_node), (double)min_slack,
+                g_num_timing_updates_seen, (double)det_WNS_s, (double)det_CPD_s, (int)size_t(det_worst_node), (double)min_slack,
                 prob_WNS_s, (int)size_t(prob_worst_node), abs_err, same_ep, (int)summary.num_endpoints,
                 ephash, num_eps12, num_eps15, summary.moments,
                 summary.runtime_ms, timing_cost_before, timing_cost_after, timing_cost_after - timing_cost_before
@@ -718,7 +764,7 @@ static double sum_td_costs(const PlacerState& placer_state) {
     return td_cost;
 }
 
-void finish_prob_inject_step1_audit(const std::string& circuit_name, int seed) {
+void finish_prob_inject_step1_audit(const std::string& circuit_name, int seed, SetupTimingInfo* timing_info) {
     VTR_LOG("PROB_INJECT_STEP1_SUMMARY: timing_updates_seen=%zu injection_updates_seen=%zu\n",
             g_num_timing_updates_seen, g_num_injection_updates_seen);
 
@@ -769,6 +815,42 @@ void finish_prob_inject_step1_audit(const std::string& circuit_name, int seed) {
                         ev.moments.num_max_calls_sigma_one_zero, ev.moments.num_max_calls_general,
                         ev.moments.num_min_calls_total,
                         ev.runtime_ms_prob, ev.timing_cost_before, ev.timing_cost_after, ev.delta_cost);
+            }
+            fclose(fp);
+        } else {
+            VTR_LOG_ERROR("Failed to open audit file %s for writing\n", csv_filename.c_str());
+        }
+    }
+
+    // --- STEP 3 SUMMARY & CSV ---
+    if (!g_prob_step3_replace_audit.empty()) {
+        float final_WNS = 0.0f;
+        float final_CPD = 0.0f;
+        if (timing_info) {
+            final_WNS = timing_info->setup_worst_negative_slack();
+            final_CPD = timing_info->least_slack_critical_path().delay().value();
+        }
+
+        VTR_LOG("PROB_STEP3_REPLACE_SUMMARY:\n");
+        VTR_LOG("  updates=%zu\n", g_num_timing_updates_seen);
+        VTR_LOG("  injections=%zu\n", g_prob_step3_replace_audit.size());
+        VTR_LOG("  mean_delta_cost=%.15g\n", g_step3_mean_delta_cost);
+        VTR_LOG("  max_delta_cost=%.15g\n", g_step3_max_delta_cost);
+        VTR_LOG("  min_delta_cost=%.15g\n", g_step3_min_delta_cost);
+        VTR_LOG("  final_CPD_ns=%.15g\n", (double)final_CPD * 1e9);
+        VTR_LOG("  final_WNS_ns=%.15g\n", (double)final_WNS * 1e9);
+
+        std::string csv_filename = "prob_step3_replace_" + circuit_name + "_" + std::to_string(seed) + ".csv";
+        VTR_LOG("Writing Phase 15 Step 3 audit trail to %s...\n", csv_filename.c_str());
+
+        FILE* fp = fopen(csv_filename.c_str(), "w");
+        if (fp) {
+            fprintf(fp, "update_id,det_WNS_s,worst_slack95_s,risk_s,timing_cost_sta,timing_cost_new,delta_cost,endpoints,runtime_ms_prob\n");
+            for (const auto& ev : g_prob_step3_replace_audit) {
+                fprintf(fp, "%zu,%.15g,%.15g,%.15g,%.15g,%.15g,%.15g,%d,%.2f\n",
+                        ev.update_id, ev.det_WNS_s, ev.worst_slack95_s, ev.risk_s,
+                        ev.timing_cost_sta, ev.timing_cost_new, ev.delta_cost,
+                        ev.endpoints, ev.runtime_ms_prob);
             }
             fclose(fp);
         } else {

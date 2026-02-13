@@ -32,7 +32,7 @@ void perform_full_timing_update(const t_placer_opts& placer_opts,
                                 t_placer_costs* costs,
                                 PlacerState& placer_state);
 
-void finish_prob_inject_step1_audit(const std::string& circuit_name, int seed);
+void finish_prob_inject_step1_audit(const std::string& circuit_name, int seed, SetupTimingInfo* timing_info);
 
 ///@brief Update timing information based on the current block positions.
 void update_timing_classes(const PlaceCritParams& crit_params,

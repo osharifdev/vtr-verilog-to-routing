@@ -1004,6 +1004,7 @@ struct t_placer_opts {
     int prob_timing_mode;
     float prob_timing_alpha;
     float prob_timing_gamma;
+    bool prob_inject_clamp;
 
     /// Weight for how much congestion affects placement cost.
     /// Higher means congestion is more important.

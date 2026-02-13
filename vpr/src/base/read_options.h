@@ -92,6 +92,7 @@ struct t_options {
     argparse::ArgValue<int> prob_timing_mode;
     argparse::ArgValue<float> prob_timing_alpha;
     argparse::ArgValue<float> prob_timing_gamma;
+    argparse::ArgValue<bool> prob_inject_clamp;
 
     // Server options
     argparse::ArgValue<bool> is_server_mode_enabled;

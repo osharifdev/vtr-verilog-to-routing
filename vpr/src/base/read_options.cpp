@@ -2324,6 +2324,11 @@ argparse::ArgumentParser create_arg_parser(const std::string& prog_name, t_optio
         .help("Gamma parameter for probabilistic timing")
         .default_value("0.0");
 
+    place_grp.add_argument<bool, ParseOnOff>(args.prob_inject_clamp, "--prob_inject_clamp")
+        .help("Enable cost clamping for probabilistic injection")
+        .default_value("on")
+        .action(argparse::Action::STORE_TRUE);
+
     place_grp.add_argument<e_place_delta_delay_algorithm, ParsePlaceDeltaDelayAlgorithm>(
                  args.place_delta_delay_matrix_calculation_method,
                  "--place_delta_delay_matrix_calculation_method")

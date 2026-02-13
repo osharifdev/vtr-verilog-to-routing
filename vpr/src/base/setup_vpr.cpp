@@ -735,6 +735,7 @@ static void setup_placer_opts(const t_options& Options, t_placer_opts* PlacerOpt
     PlacerOpts->prob_timing_mode = Options.prob_timing_mode;
     PlacerOpts->prob_timing_alpha = Options.prob_timing_alpha;
     PlacerOpts->prob_timing_gamma = Options.prob_timing_gamma;
+    PlacerOpts->prob_inject_clamp = Options.prob_inject_clamp;
 
     PlacerOpts->place_auto_init_t_scale = Options.place_auto_init_t_scale.value();
     PlacerOpts->anneal_init_t_estimator = Options.place_init_t_estimator.value();
