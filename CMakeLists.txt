@@ -5,6 +5,21 @@ include(SupportCcache)
 
 project("VTR")
 
+# Ensure Conda include directories are searched for headers like TBB and TCL
+if(DEFINED ENV{CONDA_PREFIX})
+    include_directories(SYSTEM $ENV{CONDA_PREFIX}/include)
+    link_directories($ENV{CONDA_PREFIX}/lib)
+    if(NOT TCL_INCLUDE_PATH)
+        set(TCL_INCLUDE_PATH $ENV{CONDA_PREFIX}/include CACHE PATH "TCL include path")
+    endif()
+    if(NOT TCL_LIBRARY)
+        set(TCL_LIBRARY $ENV{CONDA_PREFIX}/lib/libtcl8.6.so CACHE FILEPATH "TCL library")
+    endif()
+    if(NOT SWIG_EXECUTABLE)
+        set(SWIG_EXECUTABLE $ENV{CONDA_PREFIX}/bin/swig CACHE FILEPATH "SWIG executable")
+    endif()
+endif()
+
 #
 # VTR Build Options
 #

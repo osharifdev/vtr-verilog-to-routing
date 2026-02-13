@@ -12,6 +12,14 @@
 #include "place_util.h"
 #include "vtr_time.h"
 
+#include "tatum/TimingGraph.hpp"
+#include "tatum/delay_calc/DelayCalculator.hpp"
+#include "globals.h"
+#include "atom_netlist.h"
+#include "timing_info.h"
+#include "vtr_log.h"
+#include "FactorGraphView.h"
+
 /* Routines local to place_timing_update.cpp */
 static double comp_td_connection_cost(const PlaceDelayModel* delay_model,
                                       const PlacerCriticalities& place_crit,
@@ -91,6 +99,108 @@ void perform_full_timing_update(const PlaceCritParams& crit_params,
                                 SetupTimingInfo* timing_info,
                                 t_placer_costs* costs,
                                 PlacerState& placer_state) {
+    /* FactorGraphView: Build exactly once per run */
+    static FactorGraphView fg;
+    static BinState bin_state;
+    static bool fg_built = false;
+    if (!fg_built) {
+        const auto& timing_ctx = g_vpr_ctx.timing();
+        if (timing_ctx.graph) {
+            fg = build_factor_graph_view(*timing_ctx.graph);
+            fg_built = true;
+        }
+    }
+
+    if (fg_built && timing_info) {
+        const auto& tg = *timing_info->timing_graph();
+        const auto& analyzer = *timing_info->setup_analyzer();
+        const auto& delay_calc = *timing_info->delay_calculator();
+
+        // --- REGRESSION TESTS (ONCE PER RUN) ---
+        // 1. Mode 0: Deterministic (Baseline)
+        // Verify it runs without error.
+        ProbTimingConfig cfg0; 
+        cfg0.mode = UncertaintyMode::DETERMINISTIC;
+        update_bin_state(fg, bin_state, cfg0);
+        ProbTimingSummary sum0 = run_probabilistic_timing(fg, tg, analyzer, delay_calc, bin_state, cfg0);
+        
+        // 2. Mode 3: PRODUCTION PATH (Default)
+        // This will likely yield empty bins on 'tseng' but must be safe.
+        ProbTimingConfig cfg3_prod;
+        cfg3_prod.mode = UncertaintyMode::BIN_LATENT_CORR;
+        cfg3_prod.alpha = 0.0f; 
+        cfg3_prod.gamma = 1.0f;
+        cfg3_prod.bins_x = 4;
+        cfg3_prod.bins_y = 4;
+        cfg3_prod.forced_binning = false; // Explicity OFF
+        
+        update_bin_state(fg, bin_state, cfg3_prod);
+        ProbTimingSummary sum3_prod = run_probabilistic_timing(fg, tg, analyzer, delay_calc, bin_state, cfg3_prod);
+
+        VTR_LOG("INSTRUMENTATION: Regression [Mode 3 Prod] - Weighted: %zu, Empty: %zu\n", 
+                sum3_prod.num_weighted_edges, sum3_prod.num_empty_weight_edges);
+
+        // 3. Mode 3: VALIDATION HARNESS (Forced Binning)
+        // This confirms the math still works when requested.
+        ProbTimingConfig cfg3_forced;
+        cfg3_forced.mode = UncertaintyMode::BIN_LATENT_CORR;
+        cfg3_forced.alpha = 0.0f;
+        cfg3_forced.gamma = 1.0f; 
+        cfg3_forced.bins_x = 4;
+        cfg3_forced.bins_y = 4;
+        cfg3_forced.forced_binning = true; // Explicitly ON
+        
+        update_bin_state(fg, bin_state, cfg3_forced);
+        ProbTimingSummary sum3_forced = run_probabilistic_timing(fg, tg, analyzer, delay_calc, bin_state, cfg3_forced);
+
+        VTR_LOG("INSTRUMENTATION: Regression [Mode 3 Forced] - Correlation Test. Weighted: %zu\n", sum3_forced.num_weighted_edges);
+    }
+
+    /* Instrumentation: Print timing graph stats and sample edges */
+    static bool printed_stats = false;
+    if (!printed_stats) {
+        const auto& timing_ctx = g_vpr_ctx.timing();
+        if (timing_ctx.graph) {
+            const auto& tg = *timing_ctx.graph;
+            const auto& lookup = g_vpr_ctx.atom().lookup();
+            const auto& netlist = g_vpr_ctx.atom().netlist();
+            auto delay_calc = timing_info->delay_calculator();
+
+            size_t num_reconvergent = 0;
+            for (auto node_id : tg.nodes()) {
+                if (tg.node_in_edges(node_id).size() > 1) {
+                    num_reconvergent++;
+                }
+            }
+
+            VTR_LOG("INSTRUMENTATION: Timing Graph Stats:\n");
+            VTR_LOG("  Nodes: %zu\n", tg.nodes().size());
+            VTR_LOG("  Edges: %zu\n", tg.edges().size());
+            VTR_LOG("  Reconvergent Nodes (fanin > 1): %zu\n", num_reconvergent);
+
+            VTR_LOG("INSTRUMENTATION: Sample Timing Edges (First 10):\n");
+            int count = 0;
+            for (auto edge_id : tg.edges()) {
+                if (count >= 10) break;
+                auto src_node = tg.edge_src_node(edge_id);
+                auto sink_node = tg.edge_sink_node(edge_id);
+                float delay = delay_calc->max_edge_delay(tg, edge_id).value();
+
+                AtomPinId src_pin = lookup.tnode_atom_pin(src_node);
+                AtomPinId sink_pin = lookup.tnode_atom_pin(sink_node);
+
+                std::string src_name = (src_pin) ? netlist.pin_name(src_pin) : "N/A";
+                std::string sink_name = (sink_pin) ? netlist.pin_name(sink_pin) : "N/A";
+
+                VTR_LOG("  Edge %zu: src=%zu (%s), sink=%zu (%s), delay=%g\n",
+                        size_t(edge_id), size_t(src_node), src_name.c_str(),
+                        size_t(sink_node), sink_name.c_str(), delay);
+                count++;
+            }
+            printed_stats = true;
+        }
+    }
+
     /* Update all timing related classes. */
     criticalities->enable_update();
     setup_slacks->enable_update();
@@ -105,6 +215,10 @@ void perform_full_timing_update(const PlaceCritParams& crit_params,
                        criticalities,
                        placer_state,
                        &costs->timing_cost);
+
+    // PROB_TIMING_INJECTION_POINT (disabled)
+    // In the future, costs->timing_cost may be overridden
+    // using ProbTimingSummary::worst_slack_95
 
     /* Commit the setup slacks since they are updated. */
     commit_setup_slacks(setup_slacks, placer_state);
