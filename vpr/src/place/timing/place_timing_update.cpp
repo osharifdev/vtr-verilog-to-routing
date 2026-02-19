@@ -36,6 +36,7 @@ struct ProbInjectStep1Event {
 static std::vector<ProbInjectStep1Event> g_prob_inject_step1_audit;
 static size_t g_num_timing_updates_seen = 0;
 static size_t g_num_injection_updates_seen = 0;
+static double g_cached_regularization_scaler = 1.0; // [NEW] Cache for comp_td_costs
 
 struct ProbStep2Event {
     ProbStep2Event(size_t uid, double dWNS, double dCPD, int dWEP, double dWEPS,
@@ -203,7 +204,7 @@ void perform_full_timing_update(const t_placer_opts& placer_opts,
         // Verify it runs without error.
         ProbTimingConfig cfg0; 
         cfg0.mode = UncertaintyMode::DETERMINISTIC;
-        update_bin_state(fg, bin_state, cfg0);
+        update_bin_state(fg, bin_state, cfg0, placer_state.block_locs());
         ProbTimingSummary sum0 = run_probabilistic_timing(fg, tg, analyzer, delay_calc, bin_state, cfg0);
         
         // 2. Mode 3: PRODUCTION PATH (Default)
@@ -216,7 +217,7 @@ void perform_full_timing_update(const t_placer_opts& placer_opts,
         cfg3_prod.bins_y = 4;
         cfg3_prod.forced_binning = false; // Explicity OFF
         
-        update_bin_state(fg, bin_state, cfg3_prod);
+        update_bin_state(fg, bin_state, cfg3_prod, placer_state.block_locs());
         ProbTimingSummary sum3_prod = run_probabilistic_timing(fg, tg, analyzer, delay_calc, bin_state, cfg3_prod);
 
         VTR_LOG("INSTRUMENTATION: Regression [Mode 3 Prod] - Weighted: %zu, Empty: %zu\n", 
@@ -232,7 +233,7 @@ void perform_full_timing_update(const t_placer_opts& placer_opts,
         cfg3_forced.bins_y = 4;
         cfg3_forced.forced_binning = true; // Explicitly ON
         
-        update_bin_state(fg, bin_state, cfg3_forced);
+        update_bin_state(fg, bin_state, cfg3_forced, placer_state.block_locs());
         ProbTimingSummary sum3_forced = run_probabilistic_timing(fg, tg, analyzer, delay_calc, bin_state, cfg3_forced);
 
         VTR_LOG("INSTRUMENTATION: Regression [Mode 3 Forced] - Correlation Test. Weighted: %zu\n", sum3_forced.num_weighted_edges);
@@ -293,6 +294,8 @@ void perform_full_timing_update(const t_placer_opts& placer_opts,
                           pin_timing_invalidator);
 
     /* Update the timing cost with new connection criticalities. */
+    // [NEW] Reset scaler to 1.0 so we calculate pure STA cost first
+    g_cached_regularization_scaler = 1.0; 
     update_timing_cost(delay_model,
                        criticalities,
                        placer_state,
@@ -391,10 +394,10 @@ void perform_full_timing_update(const t_placer_opts& placer_opts,
 
             config.mode = (UncertaintyMode)placer_opts.prob_timing_mode;
             config.alpha = placer_opts.prob_timing_alpha;
-            config.gamma = placer_opts.prob_timing_gamma;
+            config.gamma = placer_opts.prob_timing_alpha_corr; // Map alpha_corr to gamma
 
             reset_moment_stats();
-            update_bin_state(*g_fg_view, g_bin_state, config);
+            update_bin_state(*g_fg_view, g_bin_state, config, placer_state.block_locs());
             summary = run_probabilistic_timing(*g_fg_view, tg, *analyzer, *timing_info->delay_calculator(), g_bin_state, config);
 
             prob_WNS_s = summary.worst_slack_95;
@@ -422,25 +425,57 @@ void perform_full_timing_update(const t_placer_opts& placer_opts,
             }
         }
 
-        // 3. Phase 15 Step 3: Replace Injection
-        if (inject_enabled && mode == "replace") {
+        // 3. Phase 15 Step 3: Replace/Regularize Injection
+        if (inject_enabled && (mode == "replace" || mode == "regularize")) {
             if (g_num_injection_updates_seen == 0) {
-                VTR_LOG("PROB_STEP3_REPLACE_CONFIG: benchmark=%s seed=%d alpha=%g gamma=%g inject=on mode=replace clamp=%s\n",
+                VTR_LOG("PROB_STEP3_INJECT_CONFIG: benchmark=%s seed=%d alpha=%g gamma=%g inject=on mode=%s lambda=%g clamp=%s\n",
                         g_vpr_ctx.atom().netlist().netlist_name().c_str(), 1, config.alpha, config.gamma,
+                        mode.c_str(), (double)placer_opts.prob_inject_lambda,
                         placer_opts.prob_inject_clamp ? "on" : "off");
             }
             g_num_injection_updates_seen++;
 
             double risk_s = (placer_opts.prob_inject_clamp) ? std::max(0.0, -prob_WNS_s) : -prob_WNS_s;
-            double timing_cost_new = risk_s;
+            double timing_cost_new = timing_cost_before;
+            double delta = 0.0;
+            double lambda = (double)placer_opts.prob_inject_lambda;
+
+            if (mode == "replace") {
+                timing_cost_new = risk_s;
+            } else if (mode == "regularize") {
+                // Dimensionless regularization: timing_cost = timing_cost_sta * (1 + lambda * risk_norm)
+                double ref_s = std::max(1e-15, -(double)det_WNS_s);
+                double risk_norm = std::min(5.0, risk_s / ref_s);
+                timing_cost_new = timing_cost_before * (1.0 + lambda * risk_norm);
+                delta = timing_cost_new - timing_cost_before;
+                g_cached_regularization_scaler = (1.0 + lambda * risk_norm); // [NEW] Update cache
+            }
+
+            // [NEW] CRITICAL FIX: The connection_timing_cost cache currently holds UN-SCALED costs 
+            // (because update_timing_cost ran when scaler was 1.0).
+            // We must now scale the cache values so that incremental updates (which read from cache)
+            // are consistent with the new global scaler.
+            if (mode != "regularize") {
+                g_cached_regularization_scaler = 1.0;
+            }
+
             costs->timing_cost = timing_cost_new;
             timing_cost_after = timing_cost_new;
-            double delta = timing_cost_new - timing_cost_before;
+            delta = timing_cost_new - timing_cost_before;
 
-            VTR_LOG("PROB_STEP3_REPLACE: update_id=%zu prob_enable=%d mode=%d alpha=%g gamma=0 inject=1 inject_mode=replace clamp=%d det_WNS_s=%.15g det_CPD_s=%.15g worst_slack95_s=%.15g risk_s=%.15g timing_cost_sta=%.15g timing_cost_new=%.15g delta_cost=%.15g endpoints=%d runtime_ms_prob=%.2f\n",
-                    g_num_timing_updates_seen, (int)placer_opts.prob_timing_enable, (int)config.mode, config.alpha, (int)placer_opts.prob_inject_clamp,
-                    (double)det_WNS_s, (double)det_CPD_s, prob_WNS_s, risk_s,
-                    timing_cost_before, timing_cost_new, delta, (int)summary.num_endpoints, summary.runtime_ms);
+            if (mode == "replace") {
+                VTR_LOG("PROB_STEP3_REPLACE: update_id=%zu prob_enable=%d mode=%d alpha=%g gamma=0 inject=1 inject_mode=replace clamp=%d det_WNS_s=%.15g det_CPD_s=%.15g worst_slack95_s=%.15g risk_s=%.15g timing_cost_sta=%.15g timing_cost_new=%.15g delta_cost=%.15g endpoints=%d runtime_ms_prob=%.2f\n",
+                        g_num_timing_updates_seen, (int)placer_opts.prob_timing_enable, (int)config.mode, config.alpha, (int)placer_opts.prob_inject_clamp,
+                        (double)det_WNS_s, (double)det_CPD_s, prob_WNS_s, risk_s,
+                        timing_cost_before, timing_cost_new, delta, (int)summary.num_endpoints, summary.runtime_ms);
+            } else if (mode == "regularize") {
+                double ref_s = std::max(1e-15, -(double)det_WNS_s);
+                double risk_norm = risk_s / ref_s;
+                VTR_LOG("PROB_STEP3_REGULARIZE: update_id=%zu prob_enable=%d mode=%d alpha=%g gamma=0 inject=1 inject_mode=regularize lambda=%g clamp=%d det_WNS_s=%.15g det_CPD_s=%.15g worst_slack95_s=%.15g risk_s=%.15g ref_s=%.15g risk_norm=%.15g timing_cost_sta=%.15g timing_cost_new=%.15g delta_cost=%.15g endpoints=%d runtime_ms_prob=%.2f\n",
+                        g_num_timing_updates_seen, (int)placer_opts.prob_timing_enable, (int)config.mode, config.alpha, lambda, (int)placer_opts.prob_inject_clamp,
+                        (double)det_WNS_s, (double)det_CPD_s, prob_WNS_s, risk_s, ref_s, risk_norm,
+                        timing_cost_before, timing_cost_new, delta, (int)summary.num_endpoints, summary.runtime_ms);
+            }
 
             g_step3_mean_delta_cost = (g_step3_mean_delta_cost * (g_num_injection_updates_seen - 1) + delta) / g_num_injection_updates_seen;
             g_step3_max_delta_cost = std::max(g_step3_max_delta_cost, delta);
@@ -651,7 +686,10 @@ void update_td_costs(const PlaceDelayModel* delay_model,
     //Re-total timing costs of all nets
     {
         vtr::Timer timer;
-        *timing_cost = connection_timing_cost.total_cost();
+        // [NEW] We must apply the regularization scaler to the delta or total here
+        // But total_cost() returns sum of cache. Cache is UNSCALED.
+        // So we multiply the result by scaler.
+        *timing_cost = connection_timing_cost.total_cost() * g_cached_regularization_scaler;
         p_runtime_ctx.f_update_td_costs_sum_nets_elapsed_sec += timer.elapsed_sec();
     }
 
@@ -699,7 +737,7 @@ void comp_td_costs(const PlaceDelayModel* delay_model,
         net_timing_cost[net_id] = sum_td_net_cost(net_id, placer_state);
     }
     /* Make sure timing cost does not go above MIN_TIMING_COST. */
-    *timing_cost = sum_td_costs(placer_state);
+    *timing_cost = sum_td_costs(placer_state) * g_cached_regularization_scaler;
 }
 
 /**
@@ -729,7 +767,11 @@ static double comp_td_connection_cost(const PlaceDelayModel* delay_model,
     VTR_ASSERT_SAFE_MSG(std::isnan(p_timing_ctx.proposed_connection_timing_cost[net][ipin]),
                         "Proposed connection timing cost should already be invalidated");
 
-    return conn_timing_cost;
+    VTR_ASSERT_SAFE_MSG(std::isnan(p_timing_ctx.proposed_connection_timing_cost[net][ipin]),
+                        "Proposed connection timing cost should already be invalidated");
+
+    // [NEW] Return UNSCALED cost. The scaler is applied to the total/delta in update_td_costs/comp_td_costs.
+    return conn_timing_cost; 
 }
 
 ///@brief Returns the timing cost of the specified 'net' based on the values in connection_timing_cost.

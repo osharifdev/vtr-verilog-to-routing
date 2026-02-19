@@ -30,6 +30,41 @@ t_options read_options(int argc, const char** argv) {
     return args;
 }
 
+struct ParseProbTimingStrategy {
+    ConvertedValue<ProbTimingStrategy> from_str(const std::string& str) {
+        ConvertedValue<ProbTimingStrategy> conv_value;
+        if (str == "crit_boost")
+            conv_value.set_value(ProbTimingStrategy::CRIT_BOOST);
+        else if (str == "cost_add")
+            conv_value.set_value(ProbTimingStrategy::COST_ADD);
+        else if (str == "off")
+            conv_value.set_value(ProbTimingStrategy::OFF);
+        else {
+            std::stringstream msg;
+            msg << "Invalid conversion from '" << str << "' to ProbTimingStrategy (expected one of: " << argparse::join(default_choices(), ", ") << ")";
+            conv_value.set_error(msg.str());
+        }
+        return conv_value;
+    }
+
+    ConvertedValue<std::string> to_str(ProbTimingStrategy val) {
+        ConvertedValue<std::string> conv_value;
+        if (val == ProbTimingStrategy::CRIT_BOOST)
+            conv_value.set_value("crit_boost");
+        else if (val == ProbTimingStrategy::COST_ADD)
+            conv_value.set_value("cost_add");
+        else {
+            VTR_ASSERT(val == ProbTimingStrategy::OFF);
+            conv_value.set_value("off");
+        }
+        return conv_value;
+    }
+
+    std::vector<std::string> default_choices() {
+        return {"off", "crit_boost", "cost_add"};
+    }
+};
+
 struct ParseOnOff {
     ConvertedValue<bool> from_str(std::string str) {
         std::transform(str.begin(), str.end(), str.begin(), ::tolower);
@@ -2316,18 +2351,46 @@ argparse::ArgumentParser create_arg_parser(const std::string& prog_name, t_optio
         .help("Mode for probabilistic timing analysis")
         .default_value("0");
 
+    place_grp.add_argument<ProbTimingStrategy, ParseProbTimingStrategy>(args.prob_timing_strategy, "--prob_timing_strategy")
+        .help("Strategy for probabilistic timing analysis (crit_boost, cost_add)")
+        .default_value("crit_boost");
+
     place_grp.add_argument<float>(args.prob_timing_alpha, "--prob_timing_alpha")
         .help("Alpha parameter for probabilistic timing")
-        .default_value("0.0");
+        .default_value("0");
 
     place_grp.add_argument<float>(args.prob_timing_gamma, "--prob_timing_gamma")
         .help("Gamma parameter for probabilistic timing")
+        .default_value("0.0");
+
+    place_grp.add_argument<int>(args.prob_timing_mc_samples, "--prob_timing_mc_samples")
+        .help("Number of Monte Carlo samples")
+        .default_value("0");
+
+    place_grp.add_argument<float>(args.prob_timing_risk_z, "--prob_timing_risk_z")
+        .help("Risk Z-score for probabilistic timing")
+        .default_value("0.0");
+
+    place_grp.add_argument<float>(args.prob_inject_lambda, "--prob_inject_lambda")
+        .help("Lambda parameter for probabilistic timing injection")
+        .default_value("0.0");
+
+    place_grp.add_argument<std::string>(args.prob_inject_scale_mode, "--prob_inject_scale_mode")
+        .help("Scale mode for probabilistic timing injection (noop, per_update_ratio)")
+        .default_value("noop");
+
+    place_grp.add_argument<float>(args.prob_timing_alpha_corr, "--prob_timing_alpha_corr")
+        .help("Correlation alpha (equivalent to gamma in some modes)")
         .default_value("0.0");
 
     place_grp.add_argument<bool, ParseOnOff>(args.prob_inject_clamp, "--prob_inject_clamp")
         .help("Enable cost clamping for probabilistic injection")
         .default_value("on")
         .action(argparse::Action::STORE_TRUE);
+
+    place_grp.add_argument(args.place_static_cost_tolerance, "--place_static_cost_tolerance")
+        .help("Global error tolerance for static cost validation (debug check)")
+        .default_value("0.05");
 
     place_grp.add_argument<e_place_delta_delay_algorithm, ParsePlaceDeltaDelayAlgorithm>(
                  args.place_delta_delay_matrix_calculation_method,

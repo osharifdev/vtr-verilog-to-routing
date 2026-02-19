@@ -196,6 +196,11 @@ void Placer::alloc_and_init_timing_objects_(const Netlist<>& net_list,
     PlaceCritParams crit_params;
     crit_params.crit_exponent = placer_opts_.td_place_exp_first;
     crit_params.crit_limit = placer_opts_.place_crit_limit;
+    crit_params.prob_strategy = placer_opts_.prob_timing_strategy;
+    crit_params.prob_mc_samples = placer_opts_.prob_timing_mc_samples;
+    crit_params.prob_risk_z = placer_opts_.prob_timing_risk_z;
+    crit_params.prob_alpha = placer_opts_.prob_timing_alpha;
+    crit_params.prob_alpha_corr = placer_opts_.prob_timing_alpha_corr;
 
     initialize_timing_info(placer_opts_,
                            crit_params,
@@ -241,7 +246,7 @@ void Placer::check_place_() {
 
     if (noc_opts_.noc) {
         // check the NoC costs during placement if the user is using the NoC supported flow
-        error += noc_cost_handler_->check_noc_placement_costs(costs_, PL_INCREMENTAL_COST_TOLERANCE, noc_opts_);
+        error += noc_cost_handler_->check_noc_placement_costs(costs_, placer_opts_.place_static_cost_tolerance, noc_opts_);
         // make sure NoC routing configuration does not create any cycles in CDG
         error += (int)noc_cost_handler_->noc_routing_has_cycle();
     }
@@ -263,7 +268,7 @@ int Placer::check_placement_costs_() {
 
     const auto [bb_cost_check, expected_wirelength, _] = net_cost_handler_.comp_bb_cong_cost(e_cost_methods::CHECK);
 
-    if (fabs(bb_cost_check - costs_.bb_cost) > costs_.bb_cost * PL_INCREMENTAL_COST_TOLERANCE) {
+    if (fabs(bb_cost_check - costs_.bb_cost) > costs_.bb_cost * placer_opts_.place_static_cost_tolerance) {
         VTR_LOG_ERROR(
             "bb_cost_check: %g and bb_cost: %g differ in check_place.\n",
             bb_cost_check, costs_.bb_cost);
@@ -273,7 +278,7 @@ int Placer::check_placement_costs_() {
     if (placer_opts_.place_algorithm.is_timing_driven()) {
         double timing_cost_check;
         comp_td_costs(place_delay_model_.get(), *placer_criticalities_, placer_state_, &timing_cost_check);
-        if (fabs(timing_cost_check - costs_.timing_cost) > costs_.timing_cost * PL_INCREMENTAL_COST_TOLERANCE) {
+        if (fabs(timing_cost_check - costs_.timing_cost) > costs_.timing_cost * placer_opts_.place_static_cost_tolerance) {
             if (placer_opts_.prob_timing_inject) {
                 VTR_LOG("timing_cost_check: %g and timing_cost: %g differ in check_place, but prob_timing_inject is on. Allowing.\n",
                         timing_cost_check, costs_.timing_cost);
@@ -349,6 +354,11 @@ void Placer::place() {
     PlaceCritParams crit_params;
     crit_params.crit_exponent = annealing_state.crit_exponent;
     crit_params.crit_limit = placer_opts_.place_crit_limit;
+    crit_params.prob_strategy = placer_opts_.prob_timing_strategy;
+    crit_params.prob_mc_samples = placer_opts_.prob_timing_mc_samples;
+    crit_params.prob_risk_z = placer_opts_.prob_timing_risk_z;
+    crit_params.prob_alpha = placer_opts_.prob_timing_alpha;
+    crit_params.prob_alpha_corr = placer_opts_.prob_timing_alpha_corr;
 
     if (placer_opts_.place_algorithm.is_timing_driven()) {
         perform_full_timing_update(placer_opts_,

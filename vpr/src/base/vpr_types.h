@@ -147,6 +147,12 @@ enum class e_check_route_option {
     FULL
 };
 
+enum class ProbTimingStrategy {
+    OFF,
+    CRIT_BOOST,
+    COST_ADD
+};
+
 ///@brief Selection algorithm for selecting next seed
 enum class e_cluster_seed {
     TIMING,
@@ -1002,9 +1008,17 @@ struct t_placer_opts {
     std::string prob_inject_mode;
     bool prob_timing_enable;
     int prob_timing_mode;
+    ProbTimingStrategy prob_timing_strategy;
+    int prob_timing_mc_samples;
+    float prob_timing_risk_z;
     float prob_timing_alpha;
     float prob_timing_gamma;
+    float prob_timing_alpha_corr;
     bool prob_inject_clamp;
+    float prob_inject_lambda;
+    std::string prob_inject_scale_mode;
+    
+    float place_static_cost_tolerance;
 
     /// Weight for how much congestion affects placement cost.
     /// Higher means congestion is more important.

@@ -1618,13 +1618,13 @@ void NetCostHandler::reset_move_nets() {
 void NetCostHandler::recompute_costs_from_scratch(const PlaceDelayModel* delay_model,
                                                   const PlacerCriticalities* criticalities,
                                                   t_placer_costs& costs) {
-    auto check_and_print_cost = [](double new_cost,
+    auto check_and_print_cost = [this](double new_cost,
                                    double old_cost,
                                    const std::string& cost_name) -> void {
-        if (!vtr::isclose(new_cost, old_cost, PL_INCREMENTAL_COST_TOLERANCE, 0.)) {
+        if (!vtr::isclose(new_cost, old_cost, (double)placer_opts_.place_static_cost_tolerance, 0.)) {
             std::string msg = vtr::string_fmt(
-                "in recompute_costs_from_scratch: new_%s = %g, old %s = %g, ERROR_TOL = %g\n",
-                cost_name.c_str(), new_cost, cost_name.c_str(), old_cost, PL_INCREMENTAL_COST_TOLERANCE);
+                "in recompute_bb_cong_cost_: new_%s = %g, old %s = %g, ERROR_TOL = %g\n",
+                cost_name.c_str(), new_cost, cost_name.c_str(), old_cost, placer_opts_.place_static_cost_tolerance);
             VPR_ERROR(VPR_ERROR_PLACE, msg.c_str());
         }
     };

@@ -504,7 +504,12 @@ t_swap_result PlacementAnnealer::try_swap_(MoveGenerator& move_generator,
     swap_stats_.num_ts_called++;
 
     PlaceCritParams crit_params{annealing_state_.crit_exponent,
-                                placer_opts_.place_crit_limit};
+                                placer_opts_.place_crit_limit,
+                                placer_opts_.prob_timing_strategy,
+                                placer_opts_.prob_timing_mc_samples,
+                                placer_opts_.prob_timing_risk_z,
+                                placer_opts_.prob_timing_alpha,
+                                placer_opts_.prob_timing_alpha_corr};
 
     // move type and block type chosen by the agent
     t_propose_action proposed_action{e_move_type::UNIFORM, -1};
@@ -912,7 +917,7 @@ void PlacementAnnealer::placement_inner_loop() {
             net_cost_handler_.recompute_costs_from_scratch(delay_model_, criticalities_, costs_);
 
             if (noc_cost_handler_.has_value()) {
-                noc_cost_handler_->recompute_costs_from_scratch(noc_opts_, costs_);
+                noc_cost_handler_->recompute_costs_from_scratch(noc_opts_, placer_opts_.place_static_cost_tolerance, costs_);
             }
 
             moves_since_cost_recompute_ = 0;
