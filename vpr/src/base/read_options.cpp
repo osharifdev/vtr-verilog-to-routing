@@ -2360,7 +2360,7 @@ argparse::ArgumentParser create_arg_parser(const std::string& prog_name, t_optio
         .default_value("0.0");
     place_grp.add_argument<float>(args.prob_timing_beta, "--prob_timing_beta")
         .help("Probabilistic timing: Distance Penalty Beta (variance scale += beta * distance)")
-        .default_value("0.0");
+        .default_value("1.0");
     place_grp.add_argument<int>(args.prob_timing_mc_samples, "--prob_timing_mc_samples")
         .help("Number of Monte Carlo samples")
         .default_value("0");
@@ -2371,7 +2371,7 @@ argparse::ArgumentParser create_arg_parser(const std::string& prog_name, t_optio
 
     place_grp.add_argument<float>(args.prob_inject_lambda, "--prob_inject_lambda")
         .help("Lambda parameter for probabilistic timing injection")
-        .default_value("0.0");
+        .default_value("0.15");
 
     place_grp.add_argument<std::string>(args.prob_inject_scale_mode, "--prob_inject_scale_mode")
         .help("Scaling mode for injection (none, max_clamped, etc.)")
