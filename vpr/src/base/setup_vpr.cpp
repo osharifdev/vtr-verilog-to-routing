@@ -733,14 +733,9 @@ static void setup_placer_opts(const t_options& Options, t_placer_opts* PlacerOpt
     PlacerOpts->prob_timing_mode = Options.prob_timing_mode;
     PlacerOpts->prob_timing_strategy = Options.prob_timing_strategy;
     PlacerOpts->prob_timing_alpha = Options.prob_timing_alpha;
-    if (Options.prob_timing_gamma == 0.0f && Options.prob_timing_alpha_corr != 0.0f) {
-         PlacerOpts->prob_timing_gamma = Options.prob_timing_alpha_corr;
-    } else {
-         PlacerOpts->prob_timing_gamma = Options.prob_timing_gamma;
-    }
+    PlacerOpts->prob_timing_beta = Options.prob_timing_beta;
     PlacerOpts->prob_timing_mc_samples = Options.prob_timing_mc_samples;
     PlacerOpts->prob_timing_risk_z = Options.prob_timing_risk_z;
-    PlacerOpts->prob_timing_alpha_corr = Options.prob_timing_alpha_corr;
     PlacerOpts->prob_inject_clamp = Options.prob_inject_clamp;
     PlacerOpts->prob_inject_lambda = Options.prob_inject_lambda;
     PlacerOpts->prob_inject_scale_mode = Options.prob_inject_scale_mode;

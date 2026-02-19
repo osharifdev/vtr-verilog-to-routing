@@ -12,9 +12,22 @@
  * crit_exponent: The criticality exponent used to sharpen the criticalities
  * crit_limit:    The limit to consider a pin as timing critical
  */
+#include "vpr_types.h"
+
+/**
+ * @brief Saves the placement criticality parameters
+ *
+ * crit_exponent: The criticality exponent used to sharpen the criticalities
+ * crit_limit:    The limit to consider a pin as timing critical
+ */
 struct PlaceCritParams {
     float crit_exponent;
     float crit_limit;
+    ProbTimingStrategy prob_strategy = ProbTimingStrategy::OFF;
+    int prob_mc_samples = 0;
+    float prob_risk_z = 0.0f;
+    float prob_alpha = 0.0f;
+    float prob_beta = 0.0f;
 };
 
 /**

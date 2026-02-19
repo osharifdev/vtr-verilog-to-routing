@@ -1012,8 +1012,7 @@ struct t_placer_opts {
     int prob_timing_mc_samples;
     float prob_timing_risk_z;
     float prob_timing_alpha;
-    float prob_timing_gamma;
-    float prob_timing_alpha_corr;
+    float prob_timing_beta; // Distance penalty factor
     bool prob_inject_clamp;
     float prob_inject_lambda;
     std::string prob_inject_scale_mode;

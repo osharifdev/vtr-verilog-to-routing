@@ -200,7 +200,7 @@ void Placer::alloc_and_init_timing_objects_(const Netlist<>& net_list,
     crit_params.prob_mc_samples = placer_opts_.prob_timing_mc_samples;
     crit_params.prob_risk_z = placer_opts_.prob_timing_risk_z;
     crit_params.prob_alpha = placer_opts_.prob_timing_alpha;
-    crit_params.prob_alpha_corr = placer_opts_.prob_timing_alpha_corr;
+    crit_params.prob_beta = placer_opts_.prob_timing_beta;
 
     initialize_timing_info(placer_opts_,
                            crit_params,
@@ -358,7 +358,7 @@ void Placer::place() {
     crit_params.prob_mc_samples = placer_opts_.prob_timing_mc_samples;
     crit_params.prob_risk_z = placer_opts_.prob_timing_risk_z;
     crit_params.prob_alpha = placer_opts_.prob_timing_alpha;
-    crit_params.prob_alpha_corr = placer_opts_.prob_timing_alpha_corr;
+    crit_params.prob_beta = placer_opts_.prob_timing_beta;
 
     if (placer_opts_.place_algorithm.is_timing_driven()) {
         perform_full_timing_update(placer_opts_,

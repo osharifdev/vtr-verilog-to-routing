@@ -508,9 +508,8 @@ t_swap_result PlacementAnnealer::try_swap_(MoveGenerator& move_generator,
                                 placer_opts_.prob_timing_strategy,
                                 placer_opts_.prob_timing_mc_samples,
                                 placer_opts_.prob_timing_risk_z,
-                                placer_opts_.prob_timing_alpha,
-                                placer_opts_.prob_timing_alpha_corr};
-
+                                placer_opts_.prob_timing_alpha,  // alpha
+                                placer_opts_.prob_timing_beta};  // beta
     // move type and block type chosen by the agent
     t_propose_action proposed_action{e_move_type::UNIFORM, -1};
 

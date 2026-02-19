@@ -43,6 +43,15 @@ void PlacerCriticalities::update_criticalities(const PlaceCritParams& crit_param
         float clb_pin_crit = calculate_clb_net_pin_criticality(*timing_info_, pin_lookup_, ParentPinId(size_t(clb_pin)), /*is_flat=*/false);
         float new_crit = pow(clb_pin_crit, crit_params.crit_exponent);
 
+        if (crit_params.prob_strategy == ProbTimingStrategy::CRIT_BOOST) {
+             // Boost criticality
+             // Use 1.0 - (alpha + alpha_corr) as the power to shift distribution towards 1.0
+             float total_alpha = crit_params.prob_alpha + crit_params.prob_beta;
+             if (total_alpha > 0.0f && total_alpha < 1.0f) {
+                 new_crit = std::pow(new_crit, 1.0f - total_alpha);
+             }
+        }
+
         /* Update the highly critical pins container
          *
          * If the old criticality < limit and the new criticality > limit --> add this pin to the highly critical pins

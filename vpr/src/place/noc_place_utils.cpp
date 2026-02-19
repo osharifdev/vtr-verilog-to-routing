@@ -372,14 +372,14 @@ NocCostTerms NocCostHandler::recompute_noc_costs() const {
     return new_cost;
 }
 
-void NocCostHandler::recompute_costs_from_scratch(const t_noc_opts& noc_opts, t_placer_costs& costs) const {
-    auto check_and_print_cost = [](double new_cost,
+void NocCostHandler::recompute_costs_from_scratch(const t_noc_opts& noc_opts, double error_tolerance, t_placer_costs& costs) const {
+    auto check_and_print_cost = [error_tolerance](double new_cost,
                                    double old_cost,
                                    const std::string& cost_name) -> void {
-        if (!vtr::isclose(new_cost, old_cost, PL_INCREMENTAL_COST_TOLERANCE, 0.)) {
+        if (!vtr::isclose(new_cost, old_cost, error_tolerance, 0.)) {
             std::string msg = vtr::string_fmt(
                 "in recompute_costs_from_scratch: new_%s = %g, old %s = %g, ERROR_TOL = %g\n",
-                cost_name.c_str(), new_cost, cost_name.c_str(), old_cost, PL_INCREMENTAL_COST_TOLERANCE);
+                cost_name.c_str(), new_cost, cost_name.c_str(), old_cost, error_tolerance);
             VPR_ERROR(VPR_ERROR_PLACE, msg.c_str());
         }
     };

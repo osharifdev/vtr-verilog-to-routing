@@ -90,9 +90,14 @@ struct t_options {
     argparse::ArgValue<std::string> prob_inject_mode;
     argparse::ArgValue<bool> prob_timing_enable;
     argparse::ArgValue<int> prob_timing_mode;
+    argparse::ArgValue<ProbTimingStrategy> prob_timing_strategy;
+    argparse::ArgValue<int> prob_timing_mc_samples;
+    argparse::ArgValue<float> prob_timing_risk_z;
     argparse::ArgValue<float> prob_timing_alpha;
-    argparse::ArgValue<float> prob_timing_gamma;
+    argparse::ArgValue<float> prob_timing_beta;
     argparse::ArgValue<bool> prob_inject_clamp;
+    argparse::ArgValue<float> prob_inject_lambda;
+    argparse::ArgValue<std::string> prob_inject_scale_mode;
 
     // Server options
     argparse::ArgValue<bool> is_server_mode_enabled;
@@ -160,6 +165,8 @@ struct t_options {
     argparse::ArgValue<int> place_high_fanout_net;
     argparse::ArgValue<e_place_bounding_box_mode> place_bounding_box_mode;
     argparse::ArgValue<e_place_freq> place_placement_freq;
+
+    argparse::ArgValue<float> place_static_cost_tolerance;
 
     argparse::ArgValue<bool> RL_agent_placement;
     argparse::ArgValue<bool> place_agent_multistate;

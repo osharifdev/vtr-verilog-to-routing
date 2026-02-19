@@ -2356,13 +2356,11 @@ argparse::ArgumentParser create_arg_parser(const std::string& prog_name, t_optio
         .default_value("crit_boost");
 
     place_grp.add_argument<float>(args.prob_timing_alpha, "--prob_timing_alpha")
-        .help("Alpha parameter for probabilistic timing")
-        .default_value("0");
-
-    place_grp.add_argument<float>(args.prob_timing_gamma, "--prob_timing_gamma")
-        .help("Gamma parameter for probabilistic timing")
+        .help("Probabilistic timing: Base Alpha (std_dev = alpha * mean)")
         .default_value("0.0");
-
+    place_grp.add_argument<float>(args.prob_timing_beta, "--prob_timing_beta")
+        .help("Probabilistic timing: Distance Penalty Beta (variance scale += beta * distance)")
+        .default_value("0.0");
     place_grp.add_argument<int>(args.prob_timing_mc_samples, "--prob_timing_mc_samples")
         .help("Number of Monte Carlo samples")
         .default_value("0");
@@ -2376,12 +2374,9 @@ argparse::ArgumentParser create_arg_parser(const std::string& prog_name, t_optio
         .default_value("0.0");
 
     place_grp.add_argument<std::string>(args.prob_inject_scale_mode, "--prob_inject_scale_mode")
-        .help("Scale mode for probabilistic timing injection (noop, per_update_ratio)")
-        .default_value("noop");
-
-    place_grp.add_argument<float>(args.prob_timing_alpha_corr, "--prob_timing_alpha_corr")
-        .help("Correlation alpha (equivalent to gamma in some modes)")
-        .default_value("0.0");
+        .help("Scaling mode for injection (none, max_clamped, etc.)")
+        .default_value("none")
+        .show_in(argparse::ShowIn::HELP_ONLY);
 
     place_grp.add_argument<bool, ParseOnOff>(args.prob_inject_clamp, "--prob_inject_clamp")
         .help("Enable cost clamping for probabilistic injection")

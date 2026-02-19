@@ -5,6 +5,8 @@
 #include <limits>
 #include <cmath>
 #include "tatum/TimingGraphFwd.hpp"
+#include "vpr_types.h"
+#include "vtr_vector_map.h"
 
 namespace tatum {
     class SetupTimingAnalyzer;
@@ -37,19 +39,17 @@ struct GaussianMoments {
 };
 
 enum class UncertaintyMode {
-    DETERMINISTIC = 0,    // alpha=0, gamma=0
-    INDEPENDENT = 1,      // alpha>0, gamma=0
-    BIN_AWARE_VAR = 2,    // alpha>0, gamma>0, rho=0
-    BIN_LATENT_CORR = 3   // alpha>0, gamma>0, rho>0
+    DETERMINISTIC = 0,
+    INDEPENDENT = 1,
+    BIN_LATENT_CORR = 3,
+    PHYSICAL_COMBINED = 4
 };
 
 struct ProbTimingConfig {
     UncertaintyMode mode = UncertaintyMode::DETERMINISTIC;
     float alpha = 0.0f;
-    float gamma = 0.0f;
-    int bins_x = 10;
-    int bins_y = 10;
-    bool forced_binning = false; // Validation harness (forces all edges to bin 0)
+    float beta = 0.0f;
+    bool forced_binning = false; // Validation harness
 };
 
 struct MomentStats {
@@ -102,9 +102,7 @@ struct FactorGraphView {
     std::vector<GaussianMoments> mu_var_B; // Candidate Arrival [edge]
     std::vector<GaussianMoments> mu_var_S; // Slack [endpoint_node]
 
-    // Mode 3: Latent Sensitivities [node][bin_id]
-    // Values are coefficients alpha_{v,b} such that A_v = mu_v + sum(alpha_{v,b} * Z_b) + independent_noise
-    std::vector<std::vector<double>> mu_var_A_sens; 
+
 
     // Summary stats
     size_t reconvergent_node_count = 0;
@@ -116,19 +114,11 @@ struct FactorGraphView {
     size_t get_structural_hash() const;
 };
 
-struct BinState {
-    int bins_x = 0;
-    int bins_y = 0;
-    int num_bins = 0;
-    
-    // Bin Risk Parameters (tau^2 = gamma * C[bin])
-    std::vector<double> bin_costs; // C[bin]
-
-    // Edge-to-Bin Weights (Sparse)
-    // For each edge e, we store a list of (bin_id, weight) pairs.
-    // Normalized such that sum(weight) = 1.0 for each edge.
-    // Only interconnect edges have entries here.
-    std::vector<std::vector<std::pair<int, float>>> edge_bin_weights; 
+struct PhysicalState {
+    // Edge-Specific Physical Scaling Factors
+    // S_e = 1.0 + beta * distance(u,v)
+    // Indexed by EdgeId (sparse, mostly for interconnect)
+    std::vector<float> edge_phys_scales; 
 };
 
 /**
@@ -144,7 +134,10 @@ ProbTimingSummary run_probabilistic_timing(FactorGraphView& fg,
                                  const tatum::TimingGraph& tg,
                                  const tatum::SetupTimingAnalyzer& analyzer,
                                  const tatum::DelayCalculator& delay_calc,
-                                 const BinState& bin_state,
+                                 const PhysicalState& phys_state,
                                  const ProbTimingConfig& config);
 
-void update_bin_state(const FactorGraphView& fg, BinState& bin_state, const ProbTimingConfig& config);
+void update_physical_state(const FactorGraphView& fg, 
+                      PhysicalState& phys_state, 
+                      const ProbTimingConfig& config,
+                      const vtr::vector_map<ClusterBlockId, t_block_loc>& block_locs);

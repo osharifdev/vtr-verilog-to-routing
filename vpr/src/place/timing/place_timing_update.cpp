@@ -98,7 +98,7 @@ static double g_step3_max_delta_cost = -std::numeric_limits<double>::infinity();
 static double g_step3_min_delta_cost = std::numeric_limits<double>::infinity();
 
 static std::unique_ptr<FactorGraphView> g_fg_view;
-static BinState g_bin_state;
+static PhysicalState g_phys_state;
 
 /* Routines local to place_timing_update.cpp */
 static double comp_td_connection_cost(const PlaceDelayModel* delay_model,
@@ -184,7 +184,7 @@ void perform_full_timing_update(const t_placer_opts& placer_opts,
                                 PlacerState& placer_state) {
     /* FactorGraphView: Build exactly once per run */
     static FactorGraphView fg;
-    static BinState bin_state;
+
     static bool fg_built = false;
     if (!fg_built) {
         const auto& timing_ctx = g_vpr_ctx.timing();
@@ -201,40 +201,42 @@ void perform_full_timing_update(const t_placer_opts& placer_opts,
 
         // --- REGRESSION TESTS (ONCE PER RUN) ---
         // 1. Mode 0: Deterministic (Baseline)
+        // 1. Mode 0: Deterministic (Baseline)
         // Verify it runs without error.
         ProbTimingConfig cfg0; 
         cfg0.mode = UncertaintyMode::DETERMINISTIC;
-        update_bin_state(fg, bin_state, cfg0, placer_state.block_locs());
-        ProbTimingSummary sum0 = run_probabilistic_timing(fg, tg, analyzer, delay_calc, bin_state, cfg0);
+        PhysicalState phys_state0;
+        update_physical_state(fg, phys_state0, cfg0, placer_state.block_locs());
+        ProbTimingSummary sum0 = run_probabilistic_timing(fg, tg, analyzer, delay_calc, phys_state0, cfg0);
+        (void)sum0; // Silence unused variable warning
         
         // 2. Mode 3: PRODUCTION PATH (Default)
+        // 2. Mode 3: PRODUCTION PATH (Default) -> Mode 4 Physical
         // This will likely yield empty bins on 'tseng' but must be safe.
         ProbTimingConfig cfg3_prod;
-        cfg3_prod.mode = UncertaintyMode::BIN_LATENT_CORR;
+        cfg3_prod.mode = UncertaintyMode::PHYSICAL_COMBINED;
         cfg3_prod.alpha = 0.0f; 
-        cfg3_prod.gamma = 1.0f;
-        cfg3_prod.bins_x = 4;
-        cfg3_prod.bins_y = 4;
+        cfg3_prod.beta = 1.0f;
         cfg3_prod.forced_binning = false; // Explicity OFF
         
-        update_bin_state(fg, bin_state, cfg3_prod, placer_state.block_locs());
-        ProbTimingSummary sum3_prod = run_probabilistic_timing(fg, tg, analyzer, delay_calc, bin_state, cfg3_prod);
+        PhysicalState phys_state_prod;
+        update_physical_state(fg, phys_state_prod, cfg3_prod, placer_state.block_locs());
+        ProbTimingSummary sum3_prod = run_probabilistic_timing(fg, tg, analyzer, delay_calc, phys_state_prod, cfg3_prod);
 
         VTR_LOG("INSTRUMENTATION: Regression [Mode 3 Prod] - Weighted: %zu, Empty: %zu\n", 
                 sum3_prod.num_weighted_edges, sum3_prod.num_empty_weight_edges);
 
-        // 3. Mode 3: VALIDATION HARNESS (Forced Binning)
+        // 3. Mode 3: VALIDATION HARNESS -> Mode 4 Physical Forced
         // This confirms the math still works when requested.
         ProbTimingConfig cfg3_forced;
-        cfg3_forced.mode = UncertaintyMode::BIN_LATENT_CORR;
-        cfg3_forced.alpha = 0.0f;
-        cfg3_forced.gamma = 1.0f; 
-        cfg3_forced.bins_x = 4;
-        cfg3_forced.bins_y = 4;
+        cfg3_forced.mode = UncertaintyMode::PHYSICAL_COMBINED; // Was BIN_LATENT_CORR
+        cfg3_forced.alpha = 0.5f;
+        cfg3_forced.beta = 0.5f;
         cfg3_forced.forced_binning = true; // Explicitly ON
         
-        update_bin_state(fg, bin_state, cfg3_forced, placer_state.block_locs());
-        ProbTimingSummary sum3_forced = run_probabilistic_timing(fg, tg, analyzer, delay_calc, bin_state, cfg3_forced);
+        PhysicalState phys_state_forced;
+        update_physical_state(fg, phys_state_forced, cfg3_forced, placer_state.block_locs());
+        ProbTimingSummary sum3_forced = run_probabilistic_timing(fg, tg, analyzer, delay_calc, phys_state_forced, cfg3_forced);
 
         VTR_LOG("INSTRUMENTATION: Regression [Mode 3 Forced] - Correlation Test. Weighted: %zu\n", sum3_forced.num_weighted_edges);
     }
@@ -394,19 +396,19 @@ void perform_full_timing_update(const t_placer_opts& placer_opts,
 
             config.mode = (UncertaintyMode)placer_opts.prob_timing_mode;
             config.alpha = placer_opts.prob_timing_alpha;
-            config.gamma = placer_opts.prob_timing_alpha_corr; // Map alpha_corr to gamma
+            config.beta = placer_opts.prob_timing_beta; 
 
             reset_moment_stats();
-            update_bin_state(*g_fg_view, g_bin_state, config, placer_state.block_locs());
-            summary = run_probabilistic_timing(*g_fg_view, tg, *analyzer, *timing_info->delay_calculator(), g_bin_state, config);
+            update_physical_state(*g_fg_view, g_phys_state, config, placer_state.block_locs());
+            summary = run_probabilistic_timing(*g_fg_view, tg, *analyzer, *timing_info->delay_calculator(), g_phys_state, config);
 
             prob_WNS_s = summary.worst_slack_95;
             prob_worst_node = summary.worst_endpoint_node_id;
             abs_err = std::abs(det_WNS_s - prob_WNS_s);
             same_ep = (det_worst_node == prob_worst_node);
 
-            VTR_LOG("PROB_STEP2_SANITY: update_id=%zu mode=%d alpha=%g gamma=%g det_WNS_s=%.15g prob_WorstSlack95_s=%.15g abs_err_WNS_s=%.15g same_worst_ep=%d endpoints=%d ephash=%zu num_eps12=%d num_eps15=%d moments_total=%zu moments_deg=%zu\n",
-                    g_num_timing_updates_seen, (int)config.mode, config.alpha, config.gamma,
+            VTR_LOG("PROB_STEP2_SANITY: update_id=%zu mode=%d alpha=%g beta=%g det_WNS_s=%.15g prob_WorstSlack95_s=%.15g abs_err_WNS_s=%.15g same_worst_ep=%d endpoints=%d ephash=%zu num_eps12=%d num_eps15=%d moments_total=%zu moments_deg=%zu\n",
+                    g_num_timing_updates_seen, (int)config.mode, config.alpha, config.beta,
                     (double)det_WNS_s, (double)prob_WNS_s, abs_err, (int)same_ep, (int)summary.num_endpoints, ephash, num_eps12, num_eps15,
                     summary.moments.num_max_calls_total, summary.moments.num_max_calls_sigma_both_zero);
 
@@ -419,7 +421,7 @@ void perform_full_timing_update(const t_placer_opts& placer_opts,
             g_step2_sum_abs_err_wns += abs_err;
             if (!same_ep) g_step2_worst_ep_mismatch_count++;
 
-            bool params_are_zero = (config.alpha == 0.0f && config.gamma == 0.0f);
+            bool params_are_zero = (config.alpha == 0.0f && config.beta == 0.0f);
             if (params_are_zero && abs_err > 1e-12) {
                 VTR_ASSERT_MSG(abs_err <= 1e-12, "PROB_STEP2: Collapse mismatch violation!");
             }
@@ -428,8 +430,8 @@ void perform_full_timing_update(const t_placer_opts& placer_opts,
         // 3. Phase 15 Step 3: Replace/Regularize Injection
         if (inject_enabled && (mode == "replace" || mode == "regularize")) {
             if (g_num_injection_updates_seen == 0) {
-                VTR_LOG("PROB_STEP3_INJECT_CONFIG: benchmark=%s seed=%d alpha=%g gamma=%g inject=on mode=%s lambda=%g clamp=%s\n",
-                        g_vpr_ctx.atom().netlist().netlist_name().c_str(), 1, config.alpha, config.gamma,
+                VTR_LOG("PROB_STEP3_INJECT_CONFIG: benchmark=%s seed=%d alpha=%g beta=%g inject=on mode=%s lambda=%g clamp=%s\n",
+                        g_vpr_ctx.atom().netlist().netlist_name().c_str(), 1, config.alpha, config.beta,
                         mode.c_str(), (double)placer_opts.prob_inject_lambda,
                         placer_opts.prob_inject_clamp ? "on" : "off");
             }

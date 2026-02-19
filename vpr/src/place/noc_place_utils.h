@@ -181,6 +181,7 @@ class NocCostHandler {
     NocCostTerms recompute_noc_costs() const;
 
     void recompute_costs_from_scratch(const t_noc_opts& noc_opts,
+                                      double error_tolerance,
                                       t_placer_costs& costs) const;
 
     /**

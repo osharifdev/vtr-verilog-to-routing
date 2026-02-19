@@ -83,140 +83,66 @@ static GaussianMoments min_gaussian_moments(GaussianMoments a, GaussianMoments b
     return {-res.mu, res.var};
 }
 
-void update_bin_state(const FactorGraphView& fg, BinState& bin_state, const ProbTimingConfig& config) {
-    if (config.mode == UncertaintyMode::DETERMINISTIC || config.mode == UncertaintyMode::INDEPENDENT) {
+void update_physical_state(const FactorGraphView& fg, 
+                      PhysicalState& phys_state, 
+                      const ProbTimingConfig& config,
+                      const vtr::vector_map<ClusterBlockId, t_block_loc>& block_locs) {
+    if (config.mode != UncertaintyMode::PHYSICAL_COMBINED && config.beta <= 1e-9) {
         return;
     }
 
-    bin_state.bins_x = config.bins_x;
-    bin_state.bins_y = config.bins_y;
-    bin_state.num_bins = config.bins_x * config.bins_y;
+    auto& atom_ctx = g_vpr_ctx.atom();
     
-    bin_state.bin_costs.assign(bin_state.num_bins, 0.0);
-    bin_state.edge_bin_weights.assign(fg.edge_src.size(), {});
-    
-    // --- VALIDATION HARNESS (Gated) ---
-    if (config.forced_binning) {
-        size_t edges_with_weights = 0;
-        for (size_t e_idx = 0; e_idx < fg.edge_src.size(); ++e_idx) {
-            if (!fg.is_interconnect_edge[e_idx]) continue;
-            int bin_id = 0; 
-            float weight = 1.0f;
-            bin_state.edge_bin_weights[e_idx].push_back({bin_id, weight});
-            bin_state.bin_costs[bin_id] += weight;
-            edges_with_weights++;
-        }
-        VTR_LOG("INSTRUMENTATION: [Forced Binning ON] All interconnect edges mapped to Bin 0. Edges=%zu\n", edges_with_weights);
-        return;
+    // Resize if needed (sparse mapping)
+    if (phys_state.edge_phys_scales.size() != fg.edge_src.size()) {
+        phys_state.edge_phys_scales.assign(fg.edge_src.size(), 1.0f);
     }
-
-    // --- PRODUCTION LOGIC ---
-    const auto& place_ctx = g_vpr_ctx.placement();
-    const auto& device_ctx = g_vpr_ctx.device();
-    const auto& atom_ctx = g_vpr_ctx.atom();
     
-    // Safety: If placement hasn't started (block_locs empty), we can't map to bins.
-    // Fallback: Leave weights empty (Mode 3 will degrade to Mode 1/0 gracefully).
-    if (place_ctx.block_locs().empty()) {
-        VTR_LOG_WARN("Probabilistic Timing: Placement context empty. Skipping bin mapping.\n");
-        return;
-    }
+    if (block_locs.empty()) return;
 
-    int nx = device_ctx.grid.width();
-    int ny = device_ctx.grid.height();
-    if (nx <= 0 || ny <= 0) return;
-
-    double bin_w = (double)nx / (double)config.bins_x;
-    double bin_h = (double)ny / (double)config.bins_y;
+    size_t edges_updated = 0;
     
-    size_t edges_with_weights = 0;
-    size_t total_interconnect = 0;
-
     for (size_t e_idx = 0; e_idx < fg.edge_src.size(); ++e_idx) {
         if (!fg.is_interconnect_edge[e_idx]) continue;
-        total_interconnect++;
 
         tatum::NodeId src_node = fg.edge_src[e_idx];
+        tatum::NodeId dst_node = fg.edge_dst[e_idx]; // We need dst too for distance
 
-        // Resolve Placement Location
-        // We need the AtomBlockId -> ClusterBlockId -> Location
-        AtomPinId atom_pin = atom_ctx.lookup().tnode_atom_pin(src_node);
-        if (!atom_pin) continue; // Not an atom pin (e.g. virtual sources)
+        // 1. Resolve Source Location
+        AtomPinId src_pin = atom_ctx.lookup().tnode_atom_pin(src_node);
+        if (!src_pin) continue;
+        AtomBlockId src_blk = atom_ctx.netlist().pin_block(src_pin);
+        if (!src_blk) continue;
+        ClusterBlockId src_clb = atom_ctx.lookup().atom_clb(src_blk);
+        if (src_clb == ClusterBlockId::INVALID() || size_t(src_clb) >= block_locs.size()) continue;
 
-        AtomBlockId atom_blk = atom_ctx.netlist().pin_block(atom_pin);
-        if (!atom_blk) continue;
+        // 2. Resolve Dest Location
+        AtomPinId dst_pin = atom_ctx.lookup().tnode_atom_pin(dst_node);
+        if (!dst_pin) continue;
+        AtomBlockId dst_blk = atom_ctx.netlist().pin_block(dst_pin);
+        if (!dst_blk) continue;
+        ClusterBlockId dst_clb = atom_ctx.lookup().atom_clb(dst_blk);
+        if (dst_clb == ClusterBlockId::INVALID() || size_t(dst_clb) >= block_locs.size()) continue;
 
-        ClusterBlockId clb_blk = atom_ctx.lookup().atom_clb(atom_blk);
-        if (clb_blk == ClusterBlockId::INVALID()) continue;
+        const auto& src_loc = block_locs[src_clb];
+        const auto& dst_loc = block_locs[dst_clb];
 
-        if (size_t(clb_blk) >= place_ctx.block_locs().size()) continue;
+        int dx = std::abs(src_loc.loc.x - dst_loc.loc.x);
+        int dy = std::abs(src_loc.loc.y - dst_loc.loc.y);
+        int dist = dx + dy;
 
-        const auto& block_loc = place_ctx.block_locs()[clb_blk];
-        int x = block_loc.loc.x;
-        int y = block_loc.loc.y;
-
-        // Map to Bin
-        int bx = std::min(config.bins_x - 1, std::max(0, (int)(x / bin_w)));
-        int by = std::min(config.bins_y - 1, std::max(0, (int)(y / bin_h)));
-        int bin_id = by * config.bins_x + bx;
-
-        // Assign Weight (currently 1.0 to single spatial bin)
-        float weight = 1.0f;
-        bin_state.edge_bin_weights[e_idx].push_back({bin_id, weight});
-        if (bin_id >= (int)bin_state.bin_costs.size()) continue;
-        
-        bin_state.bin_costs[bin_id] += weight; // Cost = congestion/count
-        edges_with_weights++;
+        // Physical Factor: Scale = 1 + beta * distance
+        // This scales VARIANCE. 
+        float scale = 1.0f + config.beta * (float)dist;
+        phys_state.edge_phys_scales[e_idx] = scale;
+        edges_updated++;
     }
     
-    VTR_LOG("INSTRUMENTATION: Bin State Updated. Interconnect Edges: %zu, Weighted: %zu (%.1f%%)\n", 
-            total_interconnect, edges_with_weights, 
-            (total_interconnect > 0) ? 100.0 * edges_with_weights / total_interconnect : 0.0);
+    VTR_LOG("INSTRUMENTATION: Physical State Updated. Edges Scaled: %zu\n", edges_updated);
 }
 
-static GaussianMoments max_gaussian_mode3(GaussianMoments a, const std::vector<double>& a_sens,
-                                          GaussianMoments b, const std::vector<double>& b_sens,
-                                          double gamma, const std::vector<double>& bin_costs,
-                                          std::vector<double>& res_sens, double& last_rho) {
-    if (!a.is_set()) { res_sens = b_sens; return b; }
-    if (!b.is_set()) { res_sens = a_sens; return a; }
+// Removed Mode 3 max_gaussian_mode3
 
-    double cov_ab = 0.0;
-    for (size_t i = 0; i < a_sens.size(); ++i) {
-        if (a_sens[i] != 0.0 && b_sens[i] != 0.0) {
-            cov_ab += a_sens[i] * b_sens[i] * bin_costs[i];
-        }
-    }
-    cov_ab *= gamma;
-
-    double var_diff = a.var + b.var - 2.0 * cov_ab;
-    double delta = std::sqrt(std::max(1e-24, var_diff));
-
-    double rho = cov_ab / (std::sqrt(std::max(1e-24, a.var)) * std::sqrt(std::max(1e-24, b.var)));
-    last_rho = std::max(-1.0, std::min(1.0, rho));
-
-    if (delta < 1e-12) {
-        if (a.mu > b.mu) { res_sens = a_sens; return a; }
-        else { res_sens = b_sens; return b; }
-    }
-
-    double alpha = (a.mu - b.mu) / delta;
-    if (alpha > 8.0) { res_sens = a_sens; return a; }
-    if (alpha < -8.0) { res_sens = b_sens; return b; }
-
-    double Phi = normal_cdf(alpha);
-    double phi = normal_pdf(alpha);
-
-    double mu_Z = a.mu * Phi + b.mu * (1.0 - Phi) + delta * phi;
-    double e_z2 = (a.var + a.mu * a.mu) * Phi + (b.var + b.mu * b.mu) * (1.0 - Phi) + (a.mu + b.mu) * delta * phi;
-    double var_Z = std::max(0.0, e_z2 - mu_Z * mu_Z);
-
-    for (size_t i = 0; i < a_sens.size(); ++i) {
-        res_sens[i] = Phi * a_sens[i] + (1.0 - Phi) * b_sens[i];
-    }
-
-    return {mu_Z, var_Z};
-}
 
 size_t FactorGraphView::get_structural_hash() const {
     size_t hash = 0;
@@ -322,14 +248,14 @@ ProbTimingSummary run_probabilistic_timing(FactorGraphView& fg,
                                  const tatum::TimingGraph& tg,
                                  const tatum::SetupTimingAnalyzer& analyzer,
                                  const tatum::DelayCalculator& delay_calc,
-                                 const BinState& bin_state,
+                                 const PhysicalState& phys_state,
                                  const ProbTimingConfig& config) {
     
     // --- PROB_TIMING_READINESS Check (Once) ---
     static bool readiness_logged = false;
     if (!readiness_logged) {
         VTR_LOG("\nPROB_TIMING_READINESS:\n");
-        VTR_LOG("  Modes implemented: 0 1 2 3\n");
+        VTR_LOG("  Modes implemented: 0 1 4\n");
         VTR_LOG("  Topology hash: %zu\n", fg.get_structural_hash());
         VTR_LOG("  Injection enabled: false\n");
         VTR_LOG("  Forced binning: %s\n", config.forced_binning ? "true" : "false");
@@ -340,89 +266,12 @@ ProbTimingSummary run_probabilistic_timing(FactorGraphView& fg,
     auto start_time = std::chrono::high_resolution_clock::now();
     VTR_LOG("INSTRUMENTATION: Starting Mode %d Analysis. Hash=%zu\n", (int)config.mode, fg.get_structural_hash());
 
-    // Initialize sensitivity vectors for Mode 3 - FIX FOR CRASH
-    if (config.mode == UncertaintyMode::BIN_LATENT_CORR) {
-        int num_bins = std::max(1, config.bins_x * config.bins_y); 
-        if (fg.mu_var_A_sens.empty() || fg.mu_var_A_sens[0].size() != size_t(num_bins)) {
-             fg.mu_var_A_sens.assign(fg.mu_var_A.size(), std::vector<double>(num_bins, 0.0));
-        }
-    }
 
-    // Exposure Logging (Correlation Table)
-    if (config.mode == UncertaintyMode::BIN_LATENT_CORR && config.alpha == 0.0f && config.gamma > 1e-9) {
-        VTR_LOG("INSTRUMENTATION: Mode 3 Exposure - Pairwise Correlation Table\n");
-        VTR_LOG("Edge1\tEdge2\tSharedBins\tVar(D1)\tVar(D2)\tCov(D1,D2)\tRho\n");
-        
-        if (bin_state.edge_bin_weights.size() != fg.edge_src.size()) {
-             VTR_LOG("ERROR: BinState not synced with FactorGraph! Skipping exposure table.\n");
-        } else {
-            int shared_count = 0;
-            int distant_count = 0;
-            for (size_t i = 0; i < fg.edge_src.size() && (shared_count < 5 || distant_count < 5); i += 50) {
-                if (!fg.is_interconnect_edge[i]) {
-                     // VTR_LOG("Skip i=%zu: Not Interconnect\n", i);
-                     continue;
-                }
-                const auto& w1 = bin_state.edge_bin_weights[i];
-                if (w1.empty()) {
-                     VTR_LOG("Skip i=%zu: Empty Weights\n", i);
-                     continue;
-                }
 
-                for (size_t j = i + 1; j < fg.edge_src.size(); j += 50) {
-                    if (!fg.is_interconnect_edge[j]) continue;
-                    if (j >= bin_state.edge_bin_weights.size()) continue;
-                    const auto& w2 = bin_state.edge_bin_weights[j];
-                    if (w2.empty()) continue;
+    // Removed Mode 3 sensitivity buffer reset
 
-                    double cov = 0.0;
-                    double w_intersect = 0.0; 
-                    for (const auto& b1 : w1) {
-                        for (const auto& b2 : w2) {
-                            if (b1.first == b2.first) {
-                                if (size_t(b1.first) < bin_state.bin_costs.size()) {
-                                    cov += b1.second * b2.second * bin_state.bin_costs[b1.first];
-                                    w_intersect += 1.0;
-                                }
-                            }
-                        }
-                    }
-                    cov *= config.gamma;
-                    
-                    double var1 = 0.0; 
-                    for (const auto& b : w1) var1 += b.second * b.second * bin_state.bin_costs[b.first];
-                    var1 *= config.gamma; 
-                    
-                    double var2 = 0.0;
-                    for (const auto& b : w2) var2 += b.second * b.second * bin_state.bin_costs[b.first];
-                    var2 *= config.gamma; 
 
-                    double rho = (var1 > 0 && var2 > 0) ? cov / std::sqrt(var1 * var2) : 0.0;
-                    
-                    if (w_intersect > 0 && shared_count < 5) {
-                        VTR_LOG("%zu\t%zu\tYes\t%.3g\t%.3g\t%.3g\t%.3f\n", i, j, var1, var2, cov, rho);
-                        shared_count++;
-                    } else if (w_intersect == 0 && distant_count < 5) {
-                         VTR_LOG("%zu\t%zu\tNo\t%.3g\t%.3g\t%.3g\t%.3f\n", i, j, var1, var2, cov, rho);
-                         distant_count++;
-                    }
-                    
-                    if (shared_count >= 5 && distant_count >= 5) break; 
-                }
-            }
-        }
-    }
-
-    if (config.mode == UncertaintyMode::BIN_LATENT_CORR) {
-        // Prepare sensitivity buffer (reset)
-        for(auto& vec : fg.mu_var_A_sens) {
-            std::fill(vec.begin(), vec.end(), 0.0);
-        }
-    }
-
-    double sample_rho = 0.0;
-    std::vector<double> tmp_sens(bin_state.num_bins, 0.0);
-    bool reconvergence_logged = false;
+    std::vector<double> tmp_sens(phys_state.edge_phys_scales.size(), 0.0);
 
     // 1. Forward Pass (Arrival)
     for (auto node_id : fg.topo_nodes) {
@@ -449,36 +298,18 @@ ProbTimingSummary run_probabilistic_timing(FactorGraphView& fg,
                 double mu_D = delay_calc.max_edge_delay(tg, edge_id).value();
                 double var_D = std::pow(config.alpha * mu_D, 2.0);
                 
-                if (config.mode >= UncertaintyMode::BIN_AWARE_VAR && !bin_state.edge_bin_weights[e_idx].empty()) {
-                    for (const auto& bw : bin_state.edge_bin_weights[e_idx]) {
-                        var_D += (bw.second * bw.second) * config.gamma * bin_state.bin_costs[bw.first];
-                    }
+                if (config.mode == UncertaintyMode::PHYSICAL_COMBINED && 
+                    !phys_state.edge_phys_scales.empty() && 
+                    e_idx < phys_state.edge_phys_scales.size()) {
+                    
+                    float scale = phys_state.edge_phys_scales[e_idx];
+                    var_D *= scale; // Scale variance by physical factor
                 }
 
                 GaussianMoments candidate_B = {src_A.mu + mu_D, src_A.var + var_D};
                 fg.mu_var_B[e_idx] = candidate_B;
 
-                if (config.mode == UncertaintyMode::BIN_LATENT_CORR) {
-                    tmp_sens = fg.mu_var_A_sens[size_t(src)];
-                    for (const auto& bw : bin_state.edge_bin_weights[e_idx]) {
-                        tmp_sens[bw.first] += bw.second; 
-                    }
-                    
-                    double rho = 0.0;
-                    current_A = max_gaussian_mode3(current_A, fg.mu_var_A_sens[n_idx], 
-                                                 candidate_B, tmp_sens, 
-                                                 config.gamma, bin_state.bin_costs, 
-                                                 fg.mu_var_A_sens[n_idx], rho);
-                    
-                    if (config.alpha == 0.0f && std::abs(rho) > 0.01 && !reconvergence_logged) {
-                        VTR_LOG("INSTRUMENTATION: Reconvergence Log - Node %zu, Rho=%.3f, Result Var=%.3g\n", 
-                                size_t(node_id), rho, current_A.var);
-                         reconvergence_logged = true;
-                    }
-                    sample_rho = rho;
-                } else {
-                    current_A = max_gaussian_moments(current_A, candidate_B);
-                }
+                current_A = max_gaussian_moments(current_A, candidate_B);
             }
         }
         fg.mu_var_A[n_idx] = current_A;
@@ -510,10 +341,12 @@ ProbTimingSummary run_probabilistic_timing(FactorGraphView& fg,
                 double mu_D = delay_calc.max_edge_delay(tg, edge_id).value();
                 double var_D = std::pow(config.alpha * mu_D, 2.0);
                 
-                if (config.mode >= UncertaintyMode::BIN_AWARE_VAR && !bin_state.edge_bin_weights[e_idx].empty()) {
-                     for (const auto& bw : bin_state.edge_bin_weights[e_idx]) {
-                        var_D += (bw.second * bw.second) * config.gamma * bin_state.bin_costs[bw.first];
-                    }
+                if (config.mode == UncertaintyMode::PHYSICAL_COMBINED && 
+                    !phys_state.edge_phys_scales.empty() && 
+                    e_idx < phys_state.edge_phys_scales.size()) {
+                    
+                    float scale = phys_state.edge_phys_scales[e_idx];
+                    var_D *= scale;
                 }
 
                 GaussianMoments candidate_R = {dst_R.mu - mu_D, dst_R.var + var_D};
@@ -556,9 +389,8 @@ ProbTimingSummary run_probabilistic_timing(FactorGraphView& fg,
     VTR_LOG("  Mode: %d, WorstSlack95: %.3g (seconds)\n", (int)config.mode, worst_S95);
     VTR_LOG("  Runtime: %.2f ms, Endpoints: %d\n", duration, endpoint_count);
 
-    if (config.mode == UncertaintyMode::BIN_LATENT_CORR) {
-        VTR_LOG("  Sample Correlation (rho): %.3f\n", sample_rho);
-    }
+    // Mode 3 logging removed
+
 
     ProbTimingSummary summary;
     summary.worst_slack_95 = worst_S95;
@@ -569,11 +401,11 @@ ProbTimingSummary run_probabilistic_timing(FactorGraphView& fg,
     size_t n_weighted = 0;
     size_t n_empty = 0;
     size_t n_inter = 0;
-    if (config.mode >= UncertaintyMode::BIN_AWARE_VAR) {
+    if (config.mode == UncertaintyMode::PHYSICAL_COMBINED) {
         for(size_t i=0; i<fg.is_interconnect_edge.size(); ++i) {
             if (fg.is_interconnect_edge[i]) {
                 n_inter++;
-                if (!bin_state.edge_bin_weights[i].empty()) n_weighted++;
+                if (i < phys_state.edge_phys_scales.size() && phys_state.edge_phys_scales[i] > 1.0f) n_weighted++; // Scaled > 1.0
                 else n_empty++;
             }
         }
