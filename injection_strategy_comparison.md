@@ -17,15 +17,14 @@ This report compares two timing risk injection strategies implemented within VPR
 ---
 
 ## 2. Performance Comparison (Beta=1.0)
+Comparison of peak performance achieved by Flat (Global Scaler) vs. Slack-Aware (Criticality Scaler) strategies.
 
-Gains/Losses relative to standard VPR baseline (Seed 1).
-
-| Benchmark | Flat Injection (Best Gain) | Slack-Aware (Best Gain) | Winner |
+| Benchmark | Flat Injection (Gain) | Slack-Aware (Gain) | Winner |
 | :--- | :--- | :--- | :--- |
-| **stereovision2** | +8.29% (@ L=0.20) | +6.70% (@ L=0.25) | **Flat** (+1.6%) |
-| **bgm** | +0.19% (@ L=0.15) | +2.31% (@ L=0.20) | **Slack-Aware** (+2.1%) |
-| **blob_merge** | -0.11% (@ L=0.20) | -2.30% (@ L=0.05) | **Flat** (+2.2%) |
-| **diffeq2** | +1.94% (@ L=0.25) | +4.56% (@ L=0.20) | **Slack-Aware** (+2.6%) |
+| **stereovision2** | **+8.29%** (@ L=0.20) | +6.70% (@ L=0.25) | **Flat** (+1.6%) |
+| **bgm** | +0.19% (@ L=0.15) | **+2.31%** (@ L=0.20) | **Slack-Aware** (+2.1%) |
+| **blob_merge** | **-0.11%** (@ L=0.20) | -2.30% (@ L=0.05) | **Flat** (+2.2%) |
+| **diffeq2** | +1.94% (@ L=0.25) | **+4.56%** (@ L=0.20) | **Slack-Aware** (+2.6%) |
 
 ---
 
