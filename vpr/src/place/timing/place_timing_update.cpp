@@ -39,6 +39,9 @@ static size_t g_num_injection_updates_seen = 0;
 static double g_cached_regularization_scaler = 1.0; // [REMOVED] Replaced by connection-specific scaling
 static double g_cached_risk_norm = 0.0;           // [NEW] Normalized risk for connection scaling
 static double g_cached_prob_lambda = 0.0;         // [NEW] Lambda for connection scaling
+static e_prob_dist_func g_cached_prob_dist_func = e_prob_dist_func::LINEAR;
+static float g_cached_prob_dist_threshold = 0.0f;
+static float g_cached_prob_huber_delta = 20.0f;
 
 struct ProbStep2Event {
     ProbStep2Event(size_t uid, double dWNS, double dCPD, int dWEP, double dWEPS,
@@ -297,6 +300,12 @@ void perform_full_timing_update(const t_placer_opts& placer_opts,
     g_cached_regularization_scaler = 1.0; 
     g_cached_risk_norm = 0.0;
     g_cached_prob_lambda = 0.0; 
+    
+    // [NEW] Update cached geometric parameters
+    g_cached_prob_dist_func = placer_opts.prob_dist_func;
+    g_cached_prob_dist_threshold = placer_opts.prob_dist_threshold;
+    g_cached_prob_huber_delta = placer_opts.prob_huber_delta;
+
     update_timing_cost(delay_model,
                        criticalities,
                        placer_state,
@@ -774,10 +783,90 @@ double comp_td_connection_cost(const PlaceDelayModel* delay_model,
 
 
     // [NEW] Apply Slack-Aware Regularization
-    // cost = base_cost * (1 + lambda * criticality * risk_norm)
+    // cost = base_cost * (1 + lambda * criticality * risk_norm * geom_scaler)
     if (g_cached_risk_norm > 0.0 && g_cached_prob_lambda > 0.0) {
         float crit = place_crit.criticality(net, ipin);
-        double scaler = 1.0 + g_cached_prob_lambda * crit * g_cached_risk_norm;
+
+        // [NEW] Geometric Refinement Logic
+        float geom_scaler = 1.0f;
+        if (g_cached_prob_dist_func != e_prob_dist_func::LINEAR) {
+            auto& cluster_ctx = g_vpr_ctx.clustering();
+            const auto& clb_nlist = cluster_ctx.clb_nlist;
+            ClusterPinId sink_pin = clb_nlist.net_pin(net, ipin);
+            ClusterBlockId sink_block = clb_nlist.pin_block(sink_pin);
+            ClusterPinId src_pin = clb_nlist.net_driver(net);
+            ClusterBlockId src_block = clb_nlist.pin_block(src_pin);
+            const auto& block_locs = placer_state.block_locs(); // Using passed placer_state
+            t_pl_loc src_loc = block_locs[src_block].loc;
+            t_pl_loc sink_loc = block_locs[sink_block].loc;
+            int dx = std::abs(src_loc.x - sink_loc.x);
+            int dy = std::abs(src_loc.y - sink_loc.y);
+            float dist = (float)(dx + dy);
+
+        if (g_cached_prob_dist_func == e_prob_dist_func::STEP) {
+                if (dist < g_cached_prob_dist_threshold) {
+                    geom_scaler = 0.0f;
+                }
+            } else if (g_cached_prob_dist_func == e_prob_dist_func::QUADRATIC) {
+                geom_scaler = std::max(1.0f, dist); 
+            } else if (g_cached_prob_dist_func == e_prob_dist_func::HUBER) {
+                float delta = g_cached_prob_huber_delta;
+                if (dist <= delta) {
+                    geom_scaler = std::max(1.0f, dist); // Quadratic-like (dist scales lambda*crit*dist)
+                } else {
+                    // Linear extension: cost slope is constant after delta
+                    // Scaler formulation: TotalCost ~ (1 + lambda*crit*geom_scaler) * Delay
+                    // We want TotalCost to be linear in dist. Delay is ~const.
+                    // So geom_scaler should be linear.
+                    // Actually, let's look at the math:
+                    // Cost = Crit * Delay * (1 + Lambda * GeomScaler)
+                    // If GeomScaler ~ Dist, then Cost ~ Dist (Linear).
+                    // If GeomScaler ~ Dist^2 (Quadratic implementation elsewhere?), no wait.
+                    
+                    // Current Implementation (Quadratic Mode):
+                    // geom_scaler = dist.
+                    // Cost = Crit * Delay * (1 + Lambda * Dist).
+                    // This is actually LINEAR in Distance.
+                    
+                    // Wait. "Quadratic" mode 4 beta=1.0 logic was:
+                    // S_e = 1.0 + beta * dist. 
+                    // That is Linear scaling of the variance, but since it's applied to the delay prob...
+                    // Let's re-read the "Quadratic" implementation in the previous turn.
+                    
+                    // Re-reading code: 
+                    // geom_scaler = dist.
+                    // conn_timing_cost *= (1.0 + lambda * crit * geom_scaler)
+                    // => Cost ~= C * D * (1 + L * dist)
+                    // => Cost ~= C*D + C*D*L*dist.
+                    // Since D is roughly proportional to dist (linear delay),
+                    // Cost ~= C * (k*dist) + C * (k*dist) * L * dist
+                    // Cost ~= k1 * dist + k2 * dist^2.
+                    // YES. "Linear" scaler = Quadratic Cost.
+                    
+                    // So for Huber:
+                    // dist <= delta: geom_scaler = dist (Quadratic Cost)
+                    // dist > delta:  geom_scaler should ideally make the cost Linear.
+                    // To make Cost Linear (Cost ~ k3 * dist), we need (1 + L*geom_scaler) to be Constant?
+                    // No. 
+                    // Quadratic Cost: k1*d + k2*d^2.
+                    // Linear Cost: k1*d.
+                    
+                    // If we want "Linear Cost" for long nets, we just want standard STA (geom_scaler = 0)?
+                    // Or do we want a minimal linear penalty?
+                    
+                    // Let's stick to the "Gradient" interpretation.
+                    // Quadratic Gradient: Force ~ dist.
+                    // Linear Gradient: Force ~ constant.
+                    
+                    // If geom_scaler = constant (e.g. delta), then Cost ~= k1*d + k2*d*delta.
+                    // This is Linear in d.
+                    
+                    geom_scaler = delta;
+                }
+            }
+        }
+
+        double scaler = 1.0 + g_cached_prob_lambda * crit * g_cached_risk_norm * geom_scaler;
         conn_timing_cost *= scaler;
     }
 

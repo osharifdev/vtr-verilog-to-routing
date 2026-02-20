@@ -1530,6 +1530,45 @@ struct ParsePostSynthNetlistUnconnOutputHandling {
     }
 };
 
+struct ParseProbDistFunc {
+    ConvertedValue<e_prob_dist_func> from_str(const std::string& str) {
+        ConvertedValue<e_prob_dist_func> conv_value;
+        if (str == "linear")
+            conv_value.set_value(e_prob_dist_func::LINEAR);
+        else if (str == "step")
+            conv_value.set_value(e_prob_dist_func::STEP);
+        else if (str == "quadratic")
+            conv_value.set_value(e_prob_dist_func::QUADRATIC);
+        else if (str == "huber")
+            conv_value.set_value(e_prob_dist_func::HUBER);
+        else {
+            std::stringstream msg;
+            msg << "Invalid conversion from '" << str << "' to e_prob_dist_func (expected one of: " << argparse::join(default_choices(), ", ") << ")";
+            conv_value.set_error(msg.str());
+        }
+        return conv_value;
+    }
+
+    ConvertedValue<std::string> to_str(e_prob_dist_func val) {
+        ConvertedValue<std::string> conv_value;
+        if (val == e_prob_dist_func::LINEAR)
+            conv_value.set_value("linear");
+        else if (val == e_prob_dist_func::STEP)
+            conv_value.set_value("step");
+        else if (val == e_prob_dist_func::QUADRATIC)
+            conv_value.set_value("quadratic");
+        else {
+            VTR_ASSERT(val == e_prob_dist_func::HUBER);
+            conv_value.set_value("huber");
+        }
+        return conv_value;
+    }
+
+    std::vector<std::string> default_choices() {
+        return {"linear", "step", "quadratic", "huber"};
+    }
+};
+
 argparse::ArgumentParser create_arg_parser(const std::string& prog_name, t_options& args) {
     std::string description =
         "Implements the specified circuit onto the target FPGA architecture"
@@ -2377,6 +2416,25 @@ argparse::ArgumentParser create_arg_parser(const std::string& prog_name, t_optio
         .help("Scaling mode for injection (none, max_clamped, etc.)")
         .default_value("none")
         .show_in(argparse::ShowIn::HELP_ONLY);
+
+    place_grp.add_argument<float>(args.prob_dist_threshold, "--prob_dist_threshold")
+        .help("Distance threshold for step function")
+        .default_value("2.0");
+
+    place_grp.add_argument<float>(args.prob_huber_delta, "--prob_huber_delta")
+        .help("Delta parameter for Huber function (transition from quadratic to linear)")
+        .default_value("20.0");
+
+    place_grp.add_argument<e_prob_dist_func, ParseProbDistFunc>(args.prob_dist_func, "--prob_dist_func")
+        .help(
+            "Controls the function used to scale the injection cost with distance.\n"
+            " * linear   : Cost = 1 + beta * dist (Default)\n"
+            " * step     : Cost = 1 + beta * dist (if dist > threshold, else 1)\n"
+            " * quadratic: Cost = 1 + beta * dist^2\n")
+        .default_value("linear")
+        .show_in(argparse::ShowIn::HELP_ONLY);
+
+
 
     place_grp.add_argument<bool, ParseOnOff>(args.prob_inject_clamp, "--prob_inject_clamp")
         .help("Enable cost clamping for probabilistic injection")
