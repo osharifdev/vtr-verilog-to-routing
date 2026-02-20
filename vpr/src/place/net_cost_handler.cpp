@@ -39,6 +39,7 @@
 #include "placer_state.h"
 #include "move_utils.h"
 #include "place_timing_update.h"
+#include "vpr_error.h"
 #include "vtr_math.h"
 #include "vtr_ndmatrix.h"
 #include "PlacerCriticalities.h"
@@ -46,6 +47,7 @@
 #include "stats.h"
 
 #include <array>
+#include <cmath>
 
 static constexpr int MAX_FANOUT_CROSSING_COUNT = 50;
 
@@ -372,7 +374,7 @@ void NetCostHandler::update_td_delta_costs_(const PlaceDelayModel* delay_model,
             /* Calculate proposed delay and cost values */
             proposed_connection_delay[net][ipin] = temp_delay;
 
-            proposed_connection_timing_cost[net][ipin] = criticalities.criticality(net, ipin) * temp_delay;
+            proposed_connection_timing_cost[net][ipin] = comp_td_connection_cost(delay_model, criticalities, placer_state_, net, ipin);
             delta_timing_cost += proposed_connection_timing_cost[net][ipin] - connection_timing_cost[net][ipin];
 
             /* Record this connection in blocks_affected.affected_pins */
@@ -397,7 +399,7 @@ void NetCostHandler::update_td_delta_costs_(const PlaceDelayModel* delay_model,
             /* Calculate proposed delay and cost values */
             proposed_connection_delay[net][ipin] = temp_delay;
 
-            proposed_connection_timing_cost[net][ipin] = criticalities.criticality(net, ipin) * temp_delay;
+            proposed_connection_timing_cost[net][ipin] = comp_td_connection_cost(delay_model, criticalities, placer_state_, net, ipin);
             delta_timing_cost += proposed_connection_timing_cost[net][ipin] - connection_timing_cost[net][ipin];
 
             /* Record this connection in blocks_affected.affected_pins */

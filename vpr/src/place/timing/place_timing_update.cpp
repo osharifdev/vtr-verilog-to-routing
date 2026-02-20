@@ -36,7 +36,9 @@ struct ProbInjectStep1Event {
 static std::vector<ProbInjectStep1Event> g_prob_inject_step1_audit;
 static size_t g_num_timing_updates_seen = 0;
 static size_t g_num_injection_updates_seen = 0;
-static double g_cached_regularization_scaler = 1.0; // [NEW] Cache for comp_td_costs
+static double g_cached_regularization_scaler = 1.0; // [REMOVED] Replaced by connection-specific scaling
+static double g_cached_risk_norm = 0.0;           // [NEW] Normalized risk for connection scaling
+static double g_cached_prob_lambda = 0.0;         // [NEW] Lambda for connection scaling
 
 struct ProbStep2Event {
     ProbStep2Event(size_t uid, double dWNS, double dCPD, int dWEP, double dWEPS,
@@ -101,11 +103,6 @@ static std::unique_ptr<FactorGraphView> g_fg_view;
 static PhysicalState g_phys_state;
 
 /* Routines local to place_timing_update.cpp */
-static double comp_td_connection_cost(const PlaceDelayModel* delay_model,
-                                      const PlacerCriticalities& place_crit,
-                                      const PlacerState& placer_state,
-                                      ClusterNetId net,
-                                      int ipin);
 
 static double sum_td_net_cost(ClusterNetId net,
                               const PlacerState& placer_state);
@@ -298,6 +295,8 @@ void perform_full_timing_update(const t_placer_opts& placer_opts,
     /* Update the timing cost with new connection criticalities. */
     // [NEW] Reset scaler to 1.0 so we calculate pure STA cost first
     g_cached_regularization_scaler = 1.0; 
+    g_cached_risk_norm = 0.0;
+    g_cached_prob_lambda = 0.0; 
     update_timing_cost(delay_model,
                        criticalities,
                        placer_state,
@@ -445,12 +444,19 @@ void perform_full_timing_update(const t_placer_opts& placer_opts,
             if (mode == "replace") {
                 timing_cost_new = risk_s;
             } else if (mode == "regularize") {
-                // Dimensionless regularization: timing_cost = timing_cost_sta * (1 + lambda * risk_norm)
                 double ref_s = std::max(1e-15, -(double)det_WNS_s);
                 double risk_norm = std::min(5.0, risk_s / ref_s);
-                timing_cost_new = timing_cost_before * (1.0 + lambda * risk_norm);
-                delta = timing_cost_new - timing_cost_before;
-                g_cached_regularization_scaler = (1.0 + lambda * risk_norm); // [NEW] Update cache
+                
+                // [CHANGED] Store normalization factors for connection-level scaling
+                g_cached_risk_norm = risk_norm;
+                g_cached_prob_lambda = lambda;
+                
+                // [FIX] We must update the connection_timing_cost cache AND re-sum the total cost
+                // from scratch to ensure perfect consistency with the new criticality-weighted scaler.
+                comp_td_costs(delay_model, *criticalities, placer_state, &costs->timing_cost); 
+                
+                timing_cost_new = costs->timing_cost;
+                g_cached_regularization_scaler = 1.0; // Retired
             }
 
             // [NEW] CRITICAL FIX: The connection_timing_cost cache currently holds UN-SCALED costs 
@@ -459,6 +465,8 @@ void perform_full_timing_update(const t_placer_opts& placer_opts,
             // are consistent with the new global scaler.
             if (mode != "regularize") {
                 g_cached_regularization_scaler = 1.0;
+                g_cached_risk_norm = 0.0;
+                g_cached_prob_lambda = 0.0;
             }
 
             costs->timing_cost = timing_cost_new;
@@ -691,7 +699,8 @@ void update_td_costs(const PlaceDelayModel* delay_model,
         // [NEW] We must apply the regularization scaler to the delta or total here
         // But total_cost() returns sum of cache. Cache is UNSCALED.
         // So we multiply the result by scaler.
-        *timing_cost = connection_timing_cost.total_cost() * g_cached_regularization_scaler;
+        // [CHANGED] Cost is now scaled inside comp_td_connection_cost
+        *timing_cost = connection_timing_cost.total_cost();
         p_runtime_ctx.f_update_td_costs_sum_nets_elapsed_sec += timer.elapsed_sec();
     }
 
@@ -739,7 +748,8 @@ void comp_td_costs(const PlaceDelayModel* delay_model,
         net_timing_cost[net_id] = sum_td_net_cost(net_id, placer_state);
     }
     /* Make sure timing cost does not go above MIN_TIMING_COST. */
-    *timing_cost = sum_td_costs(placer_state) * g_cached_regularization_scaler;
+    // [CHANGED] Cost is now scaled inside comp_td_connection_cost
+    *timing_cost = sum_td_costs(placer_state);
 }
 
 /**
@@ -748,31 +758,29 @@ void comp_td_costs(const PlaceDelayModel* delay_model,
  * This routine assumes that it is only called either compt_td_cost() or
  * update_td_costs(). Otherwise, various assertions below would fail.
  */
-static double comp_td_connection_cost(const PlaceDelayModel* delay_model,
-                                      const PlacerCriticalities& place_crit,
-                                      const PlacerState& placer_state,
-                                      ClusterNetId net,
-                                      int ipin) {
+double comp_td_connection_cost(const PlaceDelayModel* delay_model,
+                              const PlacerCriticalities& place_crit,
+                              const PlacerState& placer_state,
+                              ClusterNetId net,
+                              int ipin) {
     const auto& p_timing_ctx = placer_state.timing();
     const auto& block_locs = placer_state.block_locs();
 
     VTR_ASSERT_SAFE_MSG(ipin > 0, "Shouldn't be calculating connection timing cost for driver pins");
 
-    VTR_ASSERT_SAFE_MSG(p_timing_ctx.connection_delay[net][ipin] == comp_td_single_connection_delay(delay_model, block_locs, net, ipin),
-                        "Connection delays should already be updated");
+    float delay = comp_td_single_connection_delay(delay_model, block_locs, net, ipin);
 
-    double conn_timing_cost = place_crit.criticality(net, ipin) * p_timing_ctx.connection_delay[net][ipin];
+    double conn_timing_cost = place_crit.criticality(net, ipin) * delay;
 
-    VTR_ASSERT_SAFE_MSG(std::isnan(p_timing_ctx.proposed_connection_delay[net][ipin]),
-                        "Proposed connection delay should already be invalidated");
 
-    VTR_ASSERT_SAFE_MSG(std::isnan(p_timing_ctx.proposed_connection_timing_cost[net][ipin]),
-                        "Proposed connection timing cost should already be invalidated");
+    // [NEW] Apply Slack-Aware Regularization
+    // cost = base_cost * (1 + lambda * criticality * risk_norm)
+    if (g_cached_risk_norm > 0.0 && g_cached_prob_lambda > 0.0) {
+        float crit = place_crit.criticality(net, ipin);
+        double scaler = 1.0 + g_cached_prob_lambda * crit * g_cached_risk_norm;
+        conn_timing_cost *= scaler;
+    }
 
-    VTR_ASSERT_SAFE_MSG(std::isnan(p_timing_ctx.proposed_connection_timing_cost[net][ipin]),
-                        "Proposed connection timing cost should already be invalidated");
-
-    // [NEW] Return UNSCALED cost. The scaler is applied to the total/delta in update_td_costs/comp_td_costs.
     return conn_timing_cost; 
 }
 

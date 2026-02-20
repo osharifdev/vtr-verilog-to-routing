@@ -1,4 +1,6 @@
+#pragma once
 #include <string>
+#include "clustered_netlist_fwd.h"
 
 class PlacerState;
 struct PlaceCritParams;
@@ -58,6 +60,12 @@ void comp_td_costs(const PlaceDelayModel* delay_model,
                    const PlacerCriticalities& place_crit,
                    PlacerState& placer_state,
                    double* timing_cost);
+
+double comp_td_connection_cost(const PlaceDelayModel* delay_model,
+                               const PlacerCriticalities& place_crit,
+                               const PlacerState& placer_state,
+                               ClusterNetId net,
+                               int ipin);
 
 /**
  * @brief Commit all the setup slack values from the PlacerSetupSlacks
