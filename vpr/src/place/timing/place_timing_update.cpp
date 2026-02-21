@@ -459,7 +459,10 @@ void perform_full_timing_update(const t_placer_opts& placer_opts,
                 double risk_norm = std::min(5.0, risk_s / ref_s);
                 
                 // [NEW] Populate Adaptive Differential Criticality Matrix BEFORE cost calculation
-                if (inject_enabled && g_fg_view) {
+                // Gate: Only inject on benchmarks with sufficient graph size (>=5000 nodes).
+                // Small benchmarks have high inherent variance; injection adds noise with no signal.
+                bool graph_large_enough = g_fg_view && g_fg_view->num_nodes >= 5000;
+                if (inject_enabled && g_fg_view && graph_large_enough) {
                     const auto& cluster_ctx = g_vpr_ctx.clustering();
                     const auto& atom_ctx = g_vpr_ctx.atom();
                     const auto& clb_nlist = cluster_ctx.clb_nlist;
@@ -920,16 +923,36 @@ double comp_td_connection_cost(const PlaceDelayModel* delay_model,
             }
         }
 
+        // [NEW] Logic-Depth Confidence Scaling
+        float lambda_eff = (float)g_cached_prob_lambda;
+        if (g_fg_view && !g_fg_view->node_levels.empty()) {
+            const auto& cluster_ctx = g_vpr_ctx.clustering();
+            const auto& clb_nlist = cluster_ctx.clb_nlist;
+            ClusterPinId sink_pin = clb_nlist.net_pin(net, ipin);
+            
+            int max_depth = 0;
+            const auto& atom_ctx = g_vpr_ctx.atom();
+            for (auto atom_pin : place_crit.pin_lookup().connected_atom_pins(sink_pin)) {
+                tatum::NodeId node_id = atom_ctx.lookup().atom_pin_tnode(atom_pin);
+                if (node_id) {
+                    max_depth = std::max(max_depth, g_fg_view->node_levels[size_t(node_id)]);
+                }
+            }
+            lambda_eff *= std::log2(std::max(0.0f, (float)max_depth - 3.0f) + 1.0f);
+        }
+        // [TUNED] Optimal cap: 0.05 (confirmed by Stage 1 lambda sweep)
+        lambda_eff = std::min(lambda_eff, 0.05f);
+
         // [NEW] Topology Dampening & Linearized Criticality
         float crit_diff = 0.0f;
         if (!g_prob_differential_crit.empty()) {
             crit_diff = g_prob_differential_crit[net][ipin];
         }
 
-        double scaler = 1.0 + g_cached_prob_lambda * std::sqrt(crit_diff) * g_cached_risk_norm * geom_scaler;
+        double scaler = 1.0 + (double)lambda_eff * std::sqrt(crit_diff) * g_cached_risk_norm * geom_scaler;
         if (size_t(net) % 2000 == 0 && ipin == 1 && crit_diff > 0.001) {
-            VTR_LOG("DEBUG_SCALER: net=%zu crit_diff=%.4f scaler=%.4f risk=%.2f lambda=%.3f\n",
-                    size_t(net), (double)crit_diff, (double)scaler, (double)g_cached_risk_norm, (double)g_cached_prob_lambda);
+            VTR_LOG("DEBUG_SCALER_P6: net=%zu depth_scaled_lambda=%.4f crit_diff=%.4f scaler=%.4f risk=%.2f\n",
+                    size_t(net), (double)lambda_eff, (double)crit_diff, (double)scaler, (double)g_cached_risk_norm);
         }
         conn_timing_cost *= scaler;
     }

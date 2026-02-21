@@ -188,6 +188,7 @@ FactorGraphView build_factor_graph_view(const tatum::TimingGraph& tg) {
     view.edge_dst.resize(edge_storage_size);
     view.candidate_id_for_edge.resize(edge_storage_size);
     view.is_interconnect_edge.resize(edge_storage_size);
+    view.node_levels.resize(node_storage_size, 0);
 
     // Pre-allocate moment buffers
     view.mu_var_A.resize(node_storage_size);
@@ -198,6 +199,7 @@ FactorGraphView build_factor_graph_view(const tatum::TimingGraph& tg) {
     for (auto level_id : tg.levels()) {
         for (auto node_id : tg.level_nodes(level_id)) {
             view.topo_nodes.push_back(node_id);
+            view.node_levels[size_t(node_id)] = (int)size_t(level_id);
         }
     }
 

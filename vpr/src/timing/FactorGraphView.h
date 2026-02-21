@@ -83,6 +83,7 @@ struct FactorGraphView {
     
     // Topological order of all nodes
     std::vector<tatum::NodeId> topo_nodes;
+    std::vector<int> node_levels;  // [NEW] Node levels for logic-depth scaling
 
     // Adjacency information
     std::vector<std::vector<tatum::EdgeId>> in_edges;  // indexed by NodeId
