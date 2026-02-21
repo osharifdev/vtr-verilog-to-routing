@@ -98,6 +98,9 @@ struct t_options {
     argparse::ArgValue<bool> prob_inject_clamp;
     argparse::ArgValue<float> prob_inject_lambda;
     argparse::ArgValue<std::string> prob_inject_scale_mode;
+    argparse::ArgValue<e_prob_dist_func> prob_dist_func;
+    argparse::ArgValue<float> prob_dist_threshold;
+    argparse::ArgValue<float> prob_huber_delta;
 
     // Server options
     argparse::ArgValue<bool> is_server_mode_enabled;

@@ -19,6 +19,7 @@
 #include "timing_info.h"
 #include "vtr_log.h"
 #include "FactorGraphView.h"
+#include "timing_util.h"
 #include <vector>
 #include <cmath>
 #include <string>
@@ -42,6 +43,7 @@ static double g_cached_prob_lambda = 0.0;         // [NEW] Lambda for connection
 static e_prob_dist_func g_cached_prob_dist_func = e_prob_dist_func::LINEAR;
 static float g_cached_prob_dist_threshold = 0.0f;
 static float g_cached_prob_huber_delta = 20.0f;
+static ClbNetPinsMatrix<float> g_prob_differential_crit;
 
 struct ProbStep2Event {
     ProbStep2Event(size_t uid, double dWNS, double dCPD, int dWEP, double dWEPS,
@@ -456,16 +458,72 @@ void perform_full_timing_update(const t_placer_opts& placer_opts,
                 double ref_s = std::max(1e-15, -(double)det_WNS_s);
                 double risk_norm = std::min(5.0, risk_s / ref_s);
                 
+                // [NEW] Populate Adaptive Differential Criticality Matrix BEFORE cost calculation
+                if (inject_enabled && g_fg_view) {
+                    const auto& cluster_ctx = g_vpr_ctx.clustering();
+                    const auto& atom_ctx = g_vpr_ctx.atom();
+                    const auto& clb_nlist = cluster_ctx.clb_nlist;
+                    
+                    if (g_prob_differential_crit.empty()) {
+                        g_prob_differential_crit = make_net_pins_matrix<float>(clb_nlist, 0.0f);
+                    }
+
+                    double total_diff = 0.0;
+                    float max_diff = 0.0f;
+                    int diff_p_count = 0;
+                    float det_cpd_ns = (float)det_CPD_s * 1e9f;
+                    float max_required = std::max(1e-12f, (float)det_CPD_s);
+
+                    const auto& pin_lookup = criticalities->pin_lookup();
+                    for (auto net_id : clb_nlist.nets()) {
+                        if (clb_nlist.net_is_ignored(net_id)) continue;
+                        
+                        // Adaptive Fanout Dampening Factor: 1 / (1 + log(fanout))
+                        float fanout = (float)clb_nlist.net_sinks(net_id).size();
+                        float fanout_dampener = 1.0f / (1.0f + std::log(std::max(1.0f, fanout)));
+
+                        for (auto pin_id : clb_nlist.net_sinks(net_id)) {
+                            int ipin = clb_nlist.pin_net_index(pin_id);
+                            
+                            float det_crit = 0.0f;
+                            float prob_crit = 0.0f;
+                            
+                            for (auto atom_pin : pin_lookup.connected_atom_pins(pin_id)) {
+                                det_crit = std::max(det_crit, timing_info->setup_pin_criticality(atom_pin));
+
+                                tatum::NodeId node_id = atom_ctx.lookup().atom_pin_tnode(atom_pin);
+                                if (node_id) {
+                                    auto moments = g_fg_view->mu_var_S[size_t(node_id)];
+                                    if (moments.is_set()) {
+                                        double p_mu = (double)moments.mu;
+                                        double p_std = std::sqrt(std::max(0.0, (double)moments.var));
+                                        double p_slack95 = p_mu - 1.64485 * p_std;
+                                        float current_prob_crit = 1.0f - (float)(p_slack95 / (double)max_required);
+                                        prob_crit = std::max(prob_crit, current_prob_crit);
+                                    }
+                                }
+                            }
+                            // Differential component scaled by Fanout Dampener
+                            float diff = std::max(0.0f, prob_crit - det_crit) * fanout_dampener;
+                            g_prob_differential_crit[net_id][ipin] = diff;
+                            total_diff += (double)diff;
+                            max_diff = std::max(max_diff, diff);
+                            if (diff > 0.001) diff_p_count++;
+                        }
+                    }
+                    VTR_LOG("!!! ADAPTIVE_P5.1_ACTIVATE !!! total_diff=%.4f max_diff=%.4f pins_with_diff=%d det_cpd=%.4f ns risk_norm=%.4f lambda=%.4f\n",
+                            total_diff, (double)max_diff, diff_p_count, (double)det_cpd_ns, (double)risk_norm, (double)lambda);
+                }
+
                 // [CHANGED] Store normalization factors for connection-level scaling
                 g_cached_risk_norm = risk_norm;
                 g_cached_prob_lambda = lambda;
                 
-                // [FIX] We must update the connection_timing_cost cache AND re-sum the total cost
-                // from scratch to ensure perfect consistency with the new criticality-weighted scaler.
                 comp_td_costs(delay_model, *criticalities, placer_state, &costs->timing_cost); 
                 
                 timing_cost_new = costs->timing_cost;
                 g_cached_regularization_scaler = 1.0; // Retired
+                VTR_LOG("INSTRUMENTATION: Adaptive Differential Criticality Matrix Populated.\n");
             }
 
             // [NEW] CRITICAL FIX: The connection_timing_cost cache currently holds UN-SCALED costs 
@@ -772,7 +830,6 @@ double comp_td_connection_cost(const PlaceDelayModel* delay_model,
                               const PlacerState& placer_state,
                               ClusterNetId net,
                               int ipin) {
-    const auto& p_timing_ctx = placer_state.timing();
     const auto& block_locs = placer_state.block_locs();
 
     VTR_ASSERT_SAFE_MSG(ipin > 0, "Shouldn't be calculating connection timing cost for driver pins");
@@ -785,8 +842,6 @@ double comp_td_connection_cost(const PlaceDelayModel* delay_model,
     // [NEW] Apply Slack-Aware Regularization
     // cost = base_cost * (1 + lambda * criticality * risk_norm * geom_scaler)
     if (g_cached_risk_norm > 0.0 && g_cached_prob_lambda > 0.0) {
-        float crit = place_crit.criticality(net, ipin);
-
         // [NEW] Geometric Refinement Logic
         float geom_scaler = 1.0f;
         if (g_cached_prob_dist_func != e_prob_dist_func::LINEAR) {
@@ -796,7 +851,6 @@ double comp_td_connection_cost(const PlaceDelayModel* delay_model,
             ClusterBlockId sink_block = clb_nlist.pin_block(sink_pin);
             ClusterPinId src_pin = clb_nlist.net_driver(net);
             ClusterBlockId src_block = clb_nlist.pin_block(src_pin);
-            const auto& block_locs = placer_state.block_locs(); // Using passed placer_state
             t_pl_loc src_loc = block_locs[src_block].loc;
             t_pl_loc sink_loc = block_locs[sink_block].loc;
             int dx = std::abs(src_loc.x - sink_loc.x);
@@ -866,7 +920,17 @@ double comp_td_connection_cost(const PlaceDelayModel* delay_model,
             }
         }
 
-        double scaler = 1.0 + g_cached_prob_lambda * crit * g_cached_risk_norm * geom_scaler;
+        // [NEW] Topology Dampening & Linearized Criticality
+        float crit_diff = 0.0f;
+        if (!g_prob_differential_crit.empty()) {
+            crit_diff = g_prob_differential_crit[net][ipin];
+        }
+
+        double scaler = 1.0 + g_cached_prob_lambda * std::sqrt(crit_diff) * g_cached_risk_norm * geom_scaler;
+        if (size_t(net) % 2000 == 0 && ipin == 1 && crit_diff > 0.001) {
+            VTR_LOG("DEBUG_SCALER: net=%zu crit_diff=%.4f scaler=%.4f risk=%.2f lambda=%.3f\n",
+                    size_t(net), (double)crit_diff, (double)scaler, (double)g_cached_risk_norm, (double)g_cached_prob_lambda);
+        }
         conn_timing_cost *= scaler;
     }
 

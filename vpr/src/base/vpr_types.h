@@ -989,6 +989,13 @@ enum class e_anneal_init_t_estimator {
 
 enum class e_move_type;
 
+enum class e_prob_dist_func {
+    LINEAR,
+    STEP,
+    QUADRATIC,
+    HUBER
+};
+
 /// @brief Various options for the placer.
 struct t_placer_opts {
     /// Controls which placement algorithm is used.
@@ -1017,6 +1024,10 @@ struct t_placer_opts {
     float prob_inject_lambda;
     std::string prob_inject_scale_mode;
     
+    e_prob_dist_func prob_dist_func; // Function shape for distance scaling
+    float prob_dist_threshold;       // Threshold for Step function (e.g., minimum distance to apply penalty)
+    float prob_huber_delta;          // Transition point for Huber function
+
     float place_static_cost_tolerance;
 
     /// Weight for how much congestion affects placement cost.

@@ -49,6 +49,7 @@ struct ProbTimingConfig {
     UncertaintyMode mode = UncertaintyMode::DETERMINISTIC;
     float alpha = 0.0f;
     float beta = 0.0f;
+    float huber_delta = 20.0;
     bool forced_binning = false; // Validation harness
 };
 

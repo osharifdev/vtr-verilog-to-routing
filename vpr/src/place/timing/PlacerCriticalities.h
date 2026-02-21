@@ -124,6 +124,8 @@ class PlacerCriticalities {
      */
     pin_range pins_with_modified_criticality() const;
 
+    const ClusteredPinAtomPinsLookup& pin_lookup() const { return pin_lookup_; }
+
     /// @brief Returns a constant reference to highly critical pins
     const std::vector<std::pair<ClusterNetId, int>>& get_highly_critical_pins() const { return highly_crit_pins; }
 
