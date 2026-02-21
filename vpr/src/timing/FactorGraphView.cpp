@@ -5,6 +5,7 @@
 #include "vtr_log.h"
 #include "globals.h"
 #include "atom_netlist.h"
+#include "net_cost_handler.h"
 #include "vpr_utils.h"
 #include <algorithm>
 #include <iostream>
@@ -86,8 +87,9 @@ static GaussianMoments min_gaussian_moments(GaussianMoments a, GaussianMoments b
 void update_physical_state(const FactorGraphView& fg, 
                       PhysicalState& phys_state, 
                       const ProbTimingConfig& config,
-                      const vtr::vector_map<ClusterBlockId, t_block_loc>& block_locs) {
-    if (config.mode != UncertaintyMode::PHYSICAL_COMBINED && config.beta <= 1e-9) {
+                      const vtr::vector_map<ClusterBlockId, t_block_loc>& block_locs,
+                      const NetCostHandler* net_cost_handler) {
+    if (config.mode != UncertaintyMode::PHYSICAL_COMBINED && config.beta <= 1e-9 && config.gamma <= 1e-9) {
         return;
     }
 
@@ -100,13 +102,16 @@ void update_physical_state(const FactorGraphView& fg,
     
     if (block_locs.empty()) return;
 
+    // [PHASE 7] Congestion Map Access
+    const auto* chan_util = (net_cost_handler) ? &(net_cost_handler->get_chan_util()) : nullptr;
+
     size_t edges_updated = 0;
     
     for (size_t e_idx = 0; e_idx < fg.edge_src.size(); ++e_idx) {
         if (!fg.is_interconnect_edge[e_idx]) continue;
 
         tatum::NodeId src_node = fg.edge_src[e_idx];
-        tatum::NodeId dst_node = fg.edge_dst[e_idx]; // We need dst too for distance
+        tatum::NodeId dst_node = fg.edge_dst[e_idx]; 
 
         // 1. Resolve Source Location
         AtomPinId src_pin = atom_ctx.lookup().tnode_atom_pin(src_node);
@@ -131,9 +136,31 @@ void update_physical_state(const FactorGraphView& fg,
         int dy = std::abs(src_loc.loc.y - dst_loc.loc.y);
         int dist = dx + dy;
 
-        // Physical Factor: Scale = 1 + beta * distance
-        // This scales VARIANCE. 
+        // 3. Physical Factor: Base Distance Scaling
         float scale = 1.0f + config.beta * (float)dist;
+
+        // 4. [PHASE 7] Congestion-Aware Inflation
+        if (chan_util && config.gamma > 0.0f && !(*chan_util).x.empty() && !(*chan_util).y.empty()) {
+            auto src_l = src_loc.loc.layer;
+            auto src_x = src_loc.loc.x;
+            auto src_y = src_loc.loc.y;
+            auto dst_l = dst_loc.loc.layer;
+            auto dst_x = dst_loc.loc.x;
+            auto dst_y = dst_loc.loc.y;
+
+            if (src_l < (*chan_util).x.dim_size(0) && src_x < (*chan_util).x.dim_size(1) && src_y < (*chan_util).x.dim_size(2) &&
+                dst_l < (*chan_util).x.dim_size(0) && dst_x < (*chan_util).x.dim_size(1) && dst_y < (*chan_util).x.dim_size(2)) {
+                
+                double c_src_x = (*chan_util).x[src_l][src_x][src_y];
+                double c_src_y = (*chan_util).y[src_l][src_x][src_y];
+                double c_dst_x = (*chan_util).x[dst_l][dst_x][dst_y];
+                double c_dst_y = (*chan_util).y[dst_l][dst_x][dst_y];
+                
+                float avg_cong = (float)(c_src_x + c_src_y + c_dst_x + c_dst_y) / 4.0f;
+                scale *= (1.0f + config.gamma * avg_cong);
+            }
+        }
+
         phys_state.edge_phys_scales[e_idx] = scale;
         edges_updated++;
     }
@@ -238,8 +265,21 @@ FactorGraphView build_factor_graph_view(const tatum::TimingGraph& tg) {
         }
     }
 
-    VTR_LOG("INSTRUMENTATION: FactorGraphView Summary: Nodes=%zu, Edges=%zu, Hash=%zu\n", 
-           view.num_nodes, view.num_edges, view.get_structural_hash());
+    // [PHASE 7] Calculate Structural Self-Calibration Metrics
+    if (view.num_nodes > 0) {
+        view.reconvergence_density = (float)view.reconvergent_node_count / (float)view.num_nodes;
+        
+        // Find Median Logic Depth
+        std::vector<int> levels = view.node_levels;
+        std::sort(levels.begin(), levels.end());
+        if (!levels.empty()) {
+            view.median_logic_depth = (float)levels[levels.size() / 2];
+        }
+    }
+
+    VTR_LOG("INSTRUMENTATION: FactorGraphView Summary: Nodes=%zu, Edges=%zu, ReconvDensity=%.3f, MedianDepth=%.1f\n", 
+           view.num_nodes, view.num_edges, view.reconvergence_density, view.median_logic_depth);
+    VTR_LOG("INSTRUMENTATION: Hash=%zu\n", view.get_structural_hash());
     VTR_LOG("INSTRUMENTATION: Edge Types: Interconnect=%ld, PrimComb=%ld, PrimClock=%ld, Other=%ld\n",
             n_interconnect, n_prim_comb, n_prim_clock, n_other);
     return view;

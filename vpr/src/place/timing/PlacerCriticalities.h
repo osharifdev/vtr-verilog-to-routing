@@ -14,11 +14,10 @@
  */
 #include "vpr_types.h"
 
+class NetCostHandler;
+
 /**
  * @brief Saves the placement criticality parameters
- *
- * crit_exponent: The criticality exponent used to sharpen the criticalities
- * crit_limit:    The limit to consider a pin as timing critical
  */
 struct PlaceCritParams {
     float crit_exponent;
@@ -28,6 +27,13 @@ struct PlaceCritParams {
     float prob_risk_z = 0.0f;
     float prob_alpha = 0.0f;
     float prob_beta = 0.0f;
+
+    // [PHASE 7] Autonomous Engine Extras
+    bool prob_self_calibrate = false;
+    float prob_congestion_gamma = 0.0f;
+    bool prob_schedule_ramp = false;
+    float current_temp = 1.0f;
+    const NetCostHandler* net_cost_handler = nullptr;
 };
 
 /**

@@ -509,7 +509,12 @@ t_swap_result PlacementAnnealer::try_swap_(MoveGenerator& move_generator,
                                 placer_opts_.prob_timing_mc_samples,
                                 placer_opts_.prob_timing_risk_z,
                                 placer_opts_.prob_timing_alpha,  // alpha
-                                placer_opts_.prob_timing_beta};  // beta
+                                placer_opts_.prob_timing_beta,   // beta
+                                placer_opts_.prob_self_calibrate,
+                                placer_opts_.prob_congestion_gamma,
+                                placer_opts_.prob_schedule_ramp,
+                                annealing_state_.t,
+                                &net_cost_handler_};
     // move type and block type chosen by the agent
     t_propose_action proposed_action{e_move_type::UNIFORM, -1};
 
@@ -809,7 +814,17 @@ void PlacementAnnealer::outer_loop_update_timing_info() {
         if (outer_crit_iter_count_ >= placer_opts_.recompute_crit_iter || placer_opts_.inner_loop_recompute_divider != 0) {
 
             PlaceCritParams crit_params{annealing_state_.crit_exponent,
-                                        placer_opts_.place_crit_limit};
+                                        placer_opts_.place_crit_limit,
+                                        placer_opts_.prob_timing_strategy,
+                                        placer_opts_.prob_timing_mc_samples,
+                                        placer_opts_.prob_timing_risk_z,
+                                        placer_opts_.prob_timing_alpha,
+                                        placer_opts_.prob_timing_beta,
+                                        placer_opts_.prob_self_calibrate,
+                                        placer_opts_.prob_congestion_gamma,
+                                        placer_opts_.prob_schedule_ramp,
+                                        annealing_state_.t,
+                                        &net_cost_handler_};
 
             // Update all timing related classes
             perform_full_timing_update(placer_opts_,
@@ -895,7 +910,17 @@ void PlacementAnnealer::placement_inner_loop() {
                 inner_crit_iter_count = 0;
 
                 PlaceCritParams crit_params{annealing_state_.crit_exponent,
-                                            placer_opts_.place_crit_limit};
+                                            placer_opts_.place_crit_limit,
+                                            placer_opts_.prob_timing_strategy,
+                                            placer_opts_.prob_timing_mc_samples,
+                                            placer_opts_.prob_timing_risk_z,
+                                            placer_opts_.prob_timing_alpha,
+                                            placer_opts_.prob_timing_beta,
+                                            placer_opts_.prob_self_calibrate,
+                                            placer_opts_.prob_congestion_gamma,
+                                            placer_opts_.prob_schedule_ramp,
+                                            annealing_state_.t,
+                                            &net_cost_handler_};
 
                 // Update all timing related classes
                 perform_full_timing_update(placer_opts_,

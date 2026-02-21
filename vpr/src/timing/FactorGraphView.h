@@ -49,6 +49,7 @@ struct ProbTimingConfig {
     UncertaintyMode mode = UncertaintyMode::DETERMINISTIC;
     float alpha = 0.0f;
     float beta = 0.0f;
+    float gamma = 0.0f;          // [PHASE 7] Congestion sensitivity
     float huber_delta = 20.0;
     bool forced_binning = false; // Validation harness
 };
@@ -108,6 +109,8 @@ struct FactorGraphView {
 
     // Summary stats
     size_t reconvergent_node_count = 0;
+    float reconvergence_density = 0.0f; // [NEW] Ratio of fanin > 1 nodes
+    float median_logic_depth = 0.0f;     // [NEW] Median topological level
     std::map<int, size_t> fanin_histogram;
 
     /**
@@ -139,7 +142,10 @@ ProbTimingSummary run_probabilistic_timing(FactorGraphView& fg,
                                  const PhysicalState& phys_state,
                                  const ProbTimingConfig& config);
 
+class NetCostHandler;
+
 void update_physical_state(const FactorGraphView& fg, 
                       PhysicalState& phys_state, 
                       const ProbTimingConfig& config,
-                      const vtr::vector_map<ClusterBlockId, t_block_loc>& block_locs);
+                      const vtr::vector_map<ClusterBlockId, t_block_loc>& block_locs,
+                      const NetCostHandler* net_cost_handler = nullptr);

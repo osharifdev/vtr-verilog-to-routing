@@ -101,6 +101,9 @@ struct t_options {
     argparse::ArgValue<e_prob_dist_func> prob_dist_func;
     argparse::ArgValue<float> prob_dist_threshold;
     argparse::ArgValue<float> prob_huber_delta;
+    argparse::ArgValue<bool> prob_self_calibrate;
+    argparse::ArgValue<float> prob_congestion_gamma;
+    argparse::ArgValue<bool> prob_schedule_ramp;
 
     // Server options
     argparse::ArgValue<bool> is_server_mode_enabled;

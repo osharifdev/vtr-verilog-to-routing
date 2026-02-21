@@ -2417,6 +2417,18 @@ argparse::ArgumentParser create_arg_parser(const std::string& prog_name, t_optio
         .default_value("none")
         .show_in(argparse::ShowIn::HELP_ONLY);
 
+    place_grp.add_argument<bool, ParseOnOff>(args.prob_self_calibrate, "--prob_self_calibrate")
+        .help("Automatically set alpha and lambda based on circuit topology")
+        .default_value("off");
+
+    place_grp.add_argument<float>(args.prob_congestion_gamma, "--prob_congestion_gamma")
+        .help("Congestion-aware variance inflation factor (sigma^2 *= 1 + gamma * cong)")
+        .default_value("0.0");
+
+    place_grp.add_argument<bool, ParseOnOff>(args.prob_schedule_ramp, "--prob_schedule_ramp")
+        .help("Ramp injection intensity (lambda) as temperature drops")
+        .default_value("off");
+
     place_grp.add_argument<float>(args.prob_dist_threshold, "--prob_dist_threshold")
         .help("Distance threshold for step function")
         .default_value("2.0");

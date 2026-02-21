@@ -114,6 +114,32 @@ static double sum_td_net_cost(ClusterNetId net,
 
 static double sum_td_costs(const PlacerState& placer_state);
 
+/**
+ * @brief [PHASE 7] Topological Resolver
+ * Maps structural circuit metrics (Reconvergence Density R, Depth D) to optimal probabilistic parameters.
+ */
+struct TopologicalConfig {
+    float alpha;
+    float lambda;
+};
+
+static TopologicalConfig resolve_topological_config(const FactorGraphView& fg) {
+    TopologicalConfig cfg;
+    
+    // Calibrated Heuristic: Alpha-Reconvergence Law (v2)
+    // R (density) typically 0.1-0.3. Target alpha 0.10-0.15.
+    cfg.alpha = 0.6f * fg.reconvergence_density + 0.02f;
+    
+    // Lambda (injection) scales with logic depth
+    cfg.lambda = 0.001f * fg.median_logic_depth + 0.04f;
+    cfg.lambda = std::min(cfg.lambda, 0.15f); // Cap to prevent divergence
+    
+    VTR_LOG("AUTONOMOUS_ENGINE: Resolved structure R=%.4f D=%.2f -> α=%.4f λ=%.4f\n", 
+            fg.reconvergence_density, fg.median_logic_depth, cfg.alpha, cfg.lambda);
+            
+    return cfg;
+}
+
 ///@brief Use an incremental approach to updating timing costs after re-computing criticalities
 static constexpr bool INCR_COMP_TD_COSTS = true;
 
@@ -407,9 +433,37 @@ void perform_full_timing_update(const t_placer_opts& placer_opts,
             config.mode = (UncertaintyMode)placer_opts.prob_timing_mode;
             config.alpha = placer_opts.prob_timing_alpha;
             config.beta = placer_opts.prob_timing_beta; 
+            config.gamma = crit_params.prob_congestion_gamma; // [PHASE 7]
+
+            float lambda = placer_opts.prob_inject_lambda;
+
+            // [PHASE 7] Autonomous Overrides
+            if (crit_params.prob_self_calibrate) {
+                auto topo = resolve_topological_config(*g_fg_view);
+                config.alpha = topo.alpha;
+                lambda = topo.lambda; // Base lambda before ramp
+            }
+
+            // [PHASE 7] Dynamic Schedule Ramp
+            if (crit_params.prob_schedule_ramp) {
+                // Heuristic: Start ramp at T < 10.0, linear increase as T drops.
+                // Placer T starts high (e.g. 100) and drops to ~0.001.
+                float ramp = 1.0f;
+                if (crit_params.current_temp > 10.0f) {
+                    ramp = 0.0f; // Silent in random phase
+                } else if (crit_params.current_temp > 0.1f) {
+                    ramp = 1.0f - (crit_params.current_temp / 10.0f);
+                }
+                lambda *= ramp;
+                
+                if (g_num_timing_updates_seen % 10 == 0) {
+                    VTR_LOG("AUTONOMOUS_ENGINE: Temp=%.4f Ramp=%.4f λ_eff=%.4f\n", 
+                            crit_params.current_temp, ramp, lambda);
+                }
+            }
 
             reset_moment_stats();
-            update_physical_state(*g_fg_view, g_phys_state, config, placer_state.block_locs());
+            update_physical_state(*g_fg_view, g_phys_state, config, placer_state.block_locs(), crit_params.net_cost_handler);
             summary = run_probabilistic_timing(*g_fg_view, tg, *analyzer, *timing_info->delay_calculator(), g_phys_state, config);
 
             prob_WNS_s = summary.worst_slack_95;
@@ -544,17 +598,17 @@ void perform_full_timing_update(const t_placer_opts& placer_opts,
             delta = timing_cost_new - timing_cost_before;
 
             if (mode == "replace") {
-                VTR_LOG("PROB_STEP3_REPLACE: update_id=%zu prob_enable=%d mode=%d alpha=%g gamma=0 inject=1 inject_mode=replace clamp=%d det_WNS_s=%.15g det_CPD_s=%.15g worst_slack95_s=%.15g risk_s=%.15g timing_cost_sta=%.15g timing_cost_new=%.15g delta_cost=%.15g endpoints=%d runtime_ms_prob=%.2f\n",
-                        g_num_timing_updates_seen, (int)placer_opts.prob_timing_enable, (int)config.mode, config.alpha, (int)placer_opts.prob_inject_clamp,
-                        (double)det_WNS_s, (double)det_CPD_s, prob_WNS_s, risk_s,
-                        timing_cost_before, timing_cost_new, delta, (int)summary.num_endpoints, summary.runtime_ms);
+                VTR_LOG("PROB_STEP3_REPLACE: update_id=%zu prob=%d mode=%d alpha=%g gamma=%g clamp=%d\n",
+                        g_num_timing_updates_seen, (int)placer_opts.prob_timing_enable, (int)config.mode, config.alpha, config.gamma, (int)placer_opts.prob_inject_clamp);
+                VTR_LOG("PROB_STEP3_REPLACE_STATS: det_WNS=%.6e prob_WNS95=%.6e risk=%.6e cost_before=%.6e cost_new=%.6e delta=%.6e eps=%d\n",
+                        (double)det_WNS_s, prob_WNS_s, risk_s, timing_cost_before, timing_cost_new, delta, (int)summary.num_endpoints);
             } else if (mode == "regularize") {
                 double ref_s = std::max(1e-15, -(double)det_WNS_s);
                 double risk_norm = risk_s / ref_s;
-                VTR_LOG("PROB_STEP3_REGULARIZE: update_id=%zu prob_enable=%d mode=%d alpha=%g gamma=0 inject=1 inject_mode=regularize lambda=%g clamp=%d det_WNS_s=%.15g det_CPD_s=%.15g worst_slack95_s=%.15g risk_s=%.15g ref_s=%.15g risk_norm=%.15g timing_cost_sta=%.15g timing_cost_new=%.15g delta_cost=%.15g endpoints=%d runtime_ms_prob=%.2f\n",
-                        g_num_timing_updates_seen, (int)placer_opts.prob_timing_enable, (int)config.mode, config.alpha, lambda, (int)placer_opts.prob_inject_clamp,
-                        (double)det_WNS_s, (double)det_CPD_s, prob_WNS_s, risk_s, ref_s, risk_norm,
-                        timing_cost_before, timing_cost_new, delta, (int)summary.num_endpoints, summary.runtime_ms);
+                VTR_LOG("PROB_STEP3_REGULARIZE: update_id=%zu prob=%d mode=%d alpha=%g gamma=%g lambda=%g clamp=%d\n",
+                        g_num_timing_updates_seen, (int)placer_opts.prob_timing_enable, (int)config.mode, config.alpha, config.gamma, lambda, (int)placer_opts.prob_inject_clamp);
+                VTR_LOG("PROB_STEP3_REGULARIZE_STATS: det_WNS=%.6e prob_WNS95=%.6e risk=%.6e risk_norm=%.6e cost_before=%.6e cost_new=%.6e delta=%.6e eps=%d\n",
+                        (double)det_WNS_s, prob_WNS_s, risk_s, risk_norm, timing_cost_before, timing_cost_new, delta, (int)summary.num_endpoints);
             }
 
             g_step3_mean_delta_cost = (g_step3_mean_delta_cost * (g_num_injection_updates_seen - 1) + delta) / g_num_injection_updates_seen;

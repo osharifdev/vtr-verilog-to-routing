@@ -1023,6 +1023,9 @@ struct t_placer_opts {
     bool prob_inject_clamp;
     float prob_inject_lambda;
     std::string prob_inject_scale_mode;
+    bool prob_self_calibrate;    // [PHASE 7] Auto-set alpha/lambda
+    float prob_congestion_gamma; // [PHASE 7] Congestion-aware variance inflation
+    bool prob_schedule_ramp;     // [PHASE 7] Temperature-based lambda ramping
     
     e_prob_dist_func prob_dist_func; // Function shape for distance scaling
     float prob_dist_threshold;       // Threshold for Step function (e.g., minimum distance to apply penalty)

@@ -742,6 +742,9 @@ static void setup_placer_opts(const t_options& Options, t_placer_opts* PlacerOpt
     PlacerOpts->prob_dist_func = Options.prob_dist_func;
     PlacerOpts->prob_dist_threshold = Options.prob_dist_threshold;
     PlacerOpts->prob_huber_delta = Options.prob_huber_delta;
+    PlacerOpts->prob_self_calibrate = Options.prob_self_calibrate;
+    PlacerOpts->prob_congestion_gamma = Options.prob_congestion_gamma;
+    PlacerOpts->prob_schedule_ramp = Options.prob_schedule_ramp;
 
     PlacerOpts->place_auto_init_t_scale = Options.place_auto_init_t_scale.value();
     PlacerOpts->anneal_init_t_estimator = Options.place_init_t_estimator.value();

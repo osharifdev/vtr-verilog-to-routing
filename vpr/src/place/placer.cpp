@@ -201,6 +201,11 @@ void Placer::alloc_and_init_timing_objects_(const Netlist<>& net_list,
     crit_params.prob_risk_z = placer_opts_.prob_timing_risk_z;
     crit_params.prob_alpha = placer_opts_.prob_timing_alpha;
     crit_params.prob_beta = placer_opts_.prob_timing_beta;
+    crit_params.prob_self_calibrate = placer_opts_.prob_self_calibrate;
+    crit_params.prob_congestion_gamma = placer_opts_.prob_congestion_gamma;
+    crit_params.prob_schedule_ramp = placer_opts_.prob_schedule_ramp;
+    crit_params.net_cost_handler = &net_cost_handler_;
+    crit_params.current_temp = 100.0f; // High for initial update
 
     initialize_timing_info(placer_opts_,
                            crit_params,
@@ -359,6 +364,11 @@ void Placer::place() {
     crit_params.prob_risk_z = placer_opts_.prob_timing_risk_z;
     crit_params.prob_alpha = placer_opts_.prob_timing_alpha;
     crit_params.prob_beta = placer_opts_.prob_timing_beta;
+    crit_params.prob_self_calibrate = placer_opts_.prob_self_calibrate;
+    crit_params.prob_congestion_gamma = placer_opts_.prob_congestion_gamma;
+    crit_params.prob_schedule_ramp = placer_opts_.prob_schedule_ramp;
+    crit_params.net_cost_handler = &net_cost_handler_;
+    crit_params.current_temp = annealing_state.t;
 
     if (placer_opts_.place_algorithm.is_timing_driven()) {
         perform_full_timing_update(placer_opts_,
