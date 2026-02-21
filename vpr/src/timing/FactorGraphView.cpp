@@ -355,6 +355,17 @@ ProbTimingSummary run_probabilistic_timing(FactorGraphView& fg,
             }
         }
         fg.mu_var_A[n_idx] = current_A;
+
+        // [PHASE 7.1] Proactive Slack-Gating
+        if (config.slack_gate > 0.0f) {
+            auto slacks = analyzer.setup_slacks(node_id);
+            if (!slacks.empty()) {
+                float s = tatum::find_minimum_tag(slacks)->time().value();
+                if (s > config.slack_gate) {
+                    fg.mu_var_A[n_idx].var = 0.0; // Mask this node
+                }
+            }
+        }
     }
 
     // 2. Backward Pass (Required)
@@ -396,6 +407,17 @@ ProbTimingSummary run_probabilistic_timing(FactorGraphView& fg,
             }
         }
         fg.mu_var_R[n_idx] = current_R;
+
+        // [PHASE 7.1] Proactive Slack-Gating (Backward)
+        if (config.slack_gate > 0.0f) {
+            auto slacks = analyzer.setup_slacks(node_id);
+            if (!slacks.empty()) {
+                float s = tatum::find_minimum_tag(slacks)->time().value();
+                if (s > config.slack_gate) {
+                    fg.mu_var_R[n_idx].var = 0.0; // Mask this node
+                }
+            }
+        }
     }
 
     // 3. Slack & WorstSlack95
@@ -428,7 +450,8 @@ ProbTimingSummary run_probabilistic_timing(FactorGraphView& fg,
     double duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time).count() / 1000.0;
 
     VTR_LOG("INSTRUMENTATION: Probabilistic Timing Analysis Result:\n");
-    VTR_LOG("  Mode: %d, WorstSlack95: %.3g (seconds)\n", (int)config.mode, worst_S95);
+    VTR_LOG("  Mode: %d, SlackGate: %.3f ns, WorstSlack95: %.3g (seconds)\n", 
+            (int)config.mode, config.slack_gate * 1e9, worst_S95);
     VTR_LOG("  Runtime: %.2f ms, Endpoints: %d\n", duration, endpoint_count);
 
     // Mode 3 logging removed

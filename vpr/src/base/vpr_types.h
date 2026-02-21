@@ -1030,6 +1030,13 @@ struct t_placer_opts {
     e_prob_dist_func prob_dist_func; // Function shape for distance scaling
     float prob_dist_threshold;       // Threshold for Step function (e.g., minimum distance to apply penalty)
     float prob_huber_delta;          // Transition point for Huber function
+    
+    // [PHASE 7.1] Stability v2: Adaptive Feedback
+    float prob_slack_gate;           // Slack threshold for graph masking
+    float prob_census_threshold;     // Deterministic criticality gate for injection (e.g., > 0.8)
+    bool prob_entropy_sharpening;   // Adaptive scaling based on signal sparsity
+    float prob_hallucination_dampen; // Damping ratio for lying models
+    float prob_momentum_boost;       // Boost factor for success patterns
 
     float place_static_cost_tolerance;
 

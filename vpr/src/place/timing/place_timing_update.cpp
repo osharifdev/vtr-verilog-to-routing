@@ -44,6 +44,9 @@ static e_prob_dist_func g_cached_prob_dist_func = e_prob_dist_func::LINEAR;
 static float g_cached_prob_dist_threshold = 0.0f;
 static float g_cached_prob_huber_delta = 20.0f;
 static ClbNetPinsMatrix<float> g_prob_differential_crit;
+static double g_last_deterministic_cpd = -1.0;
+static double g_adaptive_momentum_scaler = 1.0;
+static double g_hallucination_dampener = 1.0;
 
 struct ProbStep2Event {
     ProbStep2Event(size_t uid, double dWNS, double dCPD, int dWEP, double dWEPS,
@@ -434,6 +437,11 @@ void perform_full_timing_update(const t_placer_opts& placer_opts,
             config.alpha = placer_opts.prob_timing_alpha;
             config.beta = placer_opts.prob_timing_beta; 
             config.gamma = crit_params.prob_congestion_gamma; // [PHASE 7]
+
+            // [PHASE 7.1] Stability v2
+            config.slack_gate = crit_params.prob_slack_gate;
+            config.hallucination_dampen = crit_params.prob_hallucination_dampen;
+            config.momentum_boost = crit_params.prob_momentum_boost;
 
             float lambda = placer_opts.prob_inject_lambda;
 

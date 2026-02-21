@@ -32,6 +32,19 @@ struct PlaceCritParams {
     bool prob_self_calibrate = false;
     float prob_congestion_gamma = 0.0f;
     bool prob_schedule_ramp = false;
+
+    // [PHASE 6] Geometric Scaling
+    e_prob_dist_func prob_dist_func = e_prob_dist_func::LINEAR;
+    float prob_dist_threshold = 0.0f;
+    float prob_huber_delta = 0.0f;
+
+    // [PHASE 7.1] Stability v2: Adaptive Feedback
+    float prob_slack_gate = 0.0f;
+    float prob_census_threshold = 0.0f; // New
+    bool prob_entropy_sharpening = false; // New
+    float prob_hallucination_dampen = 1.0f;
+    float prob_momentum_boost = 1.0f;
+
     float current_temp = 1.0f;
     const NetCostHandler* net_cost_handler = nullptr;
 };

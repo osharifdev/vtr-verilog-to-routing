@@ -742,9 +742,16 @@ static void setup_placer_opts(const t_options& Options, t_placer_opts* PlacerOpt
     PlacerOpts->prob_dist_func = Options.prob_dist_func;
     PlacerOpts->prob_dist_threshold = Options.prob_dist_threshold;
     PlacerOpts->prob_huber_delta = Options.prob_huber_delta;
-    PlacerOpts->prob_self_calibrate = Options.prob_self_calibrate;
-    PlacerOpts->prob_congestion_gamma = Options.prob_congestion_gamma;
-    PlacerOpts->prob_schedule_ramp = Options.prob_schedule_ramp;
+    PlacerOpts->prob_self_calibrate = Options.prob_self_calibrate.value();
+    PlacerOpts->prob_congestion_gamma = Options.prob_congestion_gamma.value();
+    PlacerOpts->prob_schedule_ramp = Options.prob_schedule_ramp.value();
+    
+    // [PHASE 7.1] Stability v2: Adaptive Feedback
+    PlacerOpts->prob_slack_gate = Options.prob_slack_gate.value();
+    PlacerOpts->prob_census_threshold = Options.prob_census_threshold.value();
+    PlacerOpts->prob_entropy_sharpening = Options.prob_entropy_sharpening.value();
+    PlacerOpts->prob_hallucination_dampen = Options.prob_hallucination_dampen.value();
+    PlacerOpts->prob_momentum_boost = Options.prob_momentum_boost.value();
 
     PlacerOpts->place_auto_init_t_scale = Options.place_auto_init_t_scale.value();
     PlacerOpts->anneal_init_t_estimator = Options.place_init_t_estimator.value();

@@ -52,6 +52,11 @@ struct ProbTimingConfig {
     float gamma = 0.0f;          // [PHASE 7] Congestion sensitivity
     float huber_delta = 20.0;
     bool forced_binning = false; // Validation harness
+
+    // [PHASE 7.1] Stability v2
+    float slack_gate = 0.0f;           // Proactive mask threshold
+    float hallucination_dampen = 1.0f; // Reactive damper
+    float momentum_boost = 1.0f;       // Success boost
 };
 
 struct MomentStats {

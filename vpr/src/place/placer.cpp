@@ -204,6 +204,12 @@ void Placer::alloc_and_init_timing_objects_(const Netlist<>& net_list,
     crit_params.prob_self_calibrate = placer_opts_.prob_self_calibrate;
     crit_params.prob_congestion_gamma = placer_opts_.prob_congestion_gamma;
     crit_params.prob_schedule_ramp = placer_opts_.prob_schedule_ramp;
+    crit_params.prob_dist_func = placer_opts_.prob_dist_func;
+    crit_params.prob_dist_threshold = placer_opts_.prob_dist_threshold;
+    crit_params.prob_huber_delta = placer_opts_.prob_huber_delta;
+    crit_params.prob_slack_gate = placer_opts_.prob_slack_gate;
+    crit_params.prob_hallucination_dampen = placer_opts_.prob_hallucination_dampen;
+    crit_params.prob_momentum_boost = placer_opts_.prob_momentum_boost;
     crit_params.net_cost_handler = &net_cost_handler_;
     crit_params.current_temp = 100.0f; // High for initial update
 
@@ -367,6 +373,14 @@ void Placer::place() {
     crit_params.prob_self_calibrate = placer_opts_.prob_self_calibrate;
     crit_params.prob_congestion_gamma = placer_opts_.prob_congestion_gamma;
     crit_params.prob_schedule_ramp = placer_opts_.prob_schedule_ramp;
+    crit_params.prob_dist_func = placer_opts_.prob_dist_func;
+    crit_params.prob_dist_threshold = placer_opts_.prob_dist_threshold;
+    crit_params.prob_huber_delta = placer_opts_.prob_huber_delta;
+    crit_params.prob_slack_gate = placer_opts_.prob_slack_gate;
+    crit_params.prob_census_threshold = placer_opts_.prob_census_threshold;
+    crit_params.prob_entropy_sharpening = placer_opts_.prob_entropy_sharpening;
+    crit_params.prob_hallucination_dampen = placer_opts_.prob_hallucination_dampen;
+    crit_params.prob_momentum_boost = placer_opts_.prob_momentum_boost;
     crit_params.net_cost_handler = &net_cost_handler_;
     crit_params.current_temp = annealing_state.t;
 

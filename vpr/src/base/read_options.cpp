@@ -2437,6 +2437,27 @@ argparse::ArgumentParser create_arg_parser(const std::string& prog_name, t_optio
         .help("Delta parameter for Huber function (transition from quadratic to linear)")
         .default_value("20.0");
 
+    // [PHASE 7.1] Stability v2: Adaptive Feedback
+    place_grp.add_argument<float>(args.prob_slack_gate, "--prob_slack_gate")
+        .help("Slack threshold for graph masking (Stability v2). Nodes safer than this are removed from the probabilistic model.")
+        .default_value("0.0");
+
+    place_grp.add_argument<float>(args.prob_census_threshold, "--prob_census_threshold")
+        .help("Deterministic criticality gate for injection (e.g., > 0.8). Prunes noise in non-critical regions.")
+        .default_value("0.0");
+
+    place_grp.add_argument<bool>(args.prob_entropy_sharpening, "--prob_entropy_sharpening")
+        .help("Enable adaptive scaling based on signal sparsity (Entropy-Aware Scaling).")
+        .default_value("off");
+
+    place_grp.add_argument<float>(args.prob_hallucination_dampen, "--prob_hallucination_dampen")
+        .help("Damping factor applied to lambda if probabilistic gains correlate with deterministic regressions")
+        .default_value("0.8");
+
+    place_grp.add_argument<float>(args.prob_momentum_boost, "--prob_momentum_boost")
+        .help("Multiplicative boost to Z-score or lambda when consistent deterministic gains are detected")
+        .default_value("1.1");
+
     place_grp.add_argument<e_prob_dist_func, ParseProbDistFunc>(args.prob_dist_func, "--prob_dist_func")
         .help(
             "Controls the function used to scale the injection cost with distance.\n"
