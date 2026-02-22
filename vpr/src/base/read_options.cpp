@@ -2442,11 +2442,15 @@ argparse::ArgumentParser create_arg_parser(const std::string& prog_name, t_optio
         .help("Slack threshold for graph masking (Stability v2). Nodes safer than this are removed from the probabilistic model.")
         .default_value("0.0");
 
+    place_grp.add_argument<float>(args.scout_success_target, "--scout_success_target")
+        .help("Fraction of successfully accepted swaps below which scouting stops (e.g. 0.35). Provides a benchmark-independent state trigger.")
+        .default_value("-1.0");
+
     place_grp.add_argument<float>(args.prob_census_threshold, "--prob_census_threshold")
         .help("Deterministic criticality gate for injection (e.g., > 0.8). Prunes noise in non-critical regions.")
         .default_value("0.0");
 
-    place_grp.add_argument<bool>(args.prob_entropy_sharpening, "--prob_entropy_sharpening")
+    place_grp.add_argument<bool, ParseOnOff>(args.prob_entropy_sharpening, "--prob_entropy_sharpening")
         .help("Enable adaptive scaling based on signal sparsity (Entropy-Aware Scaling).")
         .default_value("off");
 
@@ -2638,6 +2642,14 @@ argparse::ArgumentParser create_arg_parser(const std::string& prog_name, t_optio
             "Any net with higher fanout would be ignored while calculating some of the directed moves: Median and WeightedMedian")
         .default_value("10")
         .show_in(argparse::ShowIn::HELP_ONLY);
+
+    place_grp.add_argument(args.scout_limit, "--scout_limit")
+        .help("Stop placement after N temperature steps (Budgeted Scouting)")
+        .default_value("-1");
+
+    place_grp.add_argument(args.scout_log_file, "--scout_log_file")
+        .help("File to dump early signals for seed selection")
+        .default_value("");
 
     place_grp.add_argument<e_place_bounding_box_mode, ParsePlaceBoundingBox>(args.place_bounding_box_mode, "--place_bounding_box_mode")
         .help(

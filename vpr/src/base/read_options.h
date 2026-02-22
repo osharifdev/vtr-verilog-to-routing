@@ -212,10 +212,14 @@ struct t_options {
     argparse::ArgValue<std::string> noc_placement_file_name;
 
     // [PHASE 7.1] Stability v2: Adaptive Feedback
+    argparse::ArgValue<float> prob_slack_gate;
     argparse::ArgValue<float> prob_census_threshold;
     argparse::ArgValue<bool> prob_entropy_sharpening;
     argparse::ArgValue<float> prob_hallucination_dampen;
     argparse::ArgValue<float> prob_momentum_boost;
+    argparse::ArgValue<float> scout_success_target;
+    argparse::ArgValue<int> scout_limit;
+    argparse::ArgValue<std::string> scout_log_file;
 
     // Timing-driven placement options only
     argparse::ArgValue<float> place_congestion_factor;

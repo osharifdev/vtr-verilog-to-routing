@@ -57,6 +57,7 @@ struct ProbTimingConfig {
     float slack_gate = 0.0f;           // Proactive mask threshold
     float hallucination_dampen = 1.0f; // Reactive damper
     float momentum_boost = 1.0f;       // Success boost
+    float min_slack = 0.0f;            // Worsted slack in the circuit
 };
 
 struct MomentStats {

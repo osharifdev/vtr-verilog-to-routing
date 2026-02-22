@@ -361,7 +361,8 @@ ProbTimingSummary run_probabilistic_timing(FactorGraphView& fg,
             auto slacks = analyzer.setup_slacks(node_id);
             if (!slacks.empty()) {
                 float s = tatum::find_minimum_tag(slacks)->time().value();
-                if (s > config.slack_gate) {
+                // Relative Gate: Mask if slack is significantly better than worst slack
+                if (s > config.min_slack + config.slack_gate) {
                     fg.mu_var_A[n_idx].var = 0.0; // Mask this node
                 }
             }

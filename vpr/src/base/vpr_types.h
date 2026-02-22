@@ -1037,6 +1037,9 @@ struct t_placer_opts {
     bool prob_entropy_sharpening;   // Adaptive scaling based on signal sparsity
     float prob_hallucination_dampen; // Damping ratio for lying models
     float prob_momentum_boost;       // Boost factor for success patterns
+    int scout_limit = -1;            // Stop placement after N temperature steps
+    float scout_success_target = -1.0f; // Stop placement when success rate falls below this threshold
+    std::string scout_log_file;      // CSV file to dump early signals
 
     float place_static_cost_tolerance;
 

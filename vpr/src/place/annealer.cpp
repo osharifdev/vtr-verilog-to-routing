@@ -4,6 +4,8 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <fstream>
+#include <iomanip>
 
 #include "globals.h"
 #include "place_macro.h"
@@ -296,6 +298,9 @@ PlacementAnnealer::PlacementAnnealer(const t_placer_opts& placer_opts,
     // Update the starting temperature for placement annealing to a more appropriate value
     VTR_ASSERT_SAFE_MSG(auto_init_t_scale >= 0, "Initial temperature scale cannot be negative.");
     annealing_state_.t = estimate_starting_temperature_() * auto_init_t_scale;
+    initial_timing_cost_ = costs_.timing_cost;
+    VTR_LOG("PlacementAnnealer initialized: scout_limit=%d scout_log=%s\n", 
+            placer_opts_.scout_limit, placer_opts_.scout_log_file.c_str());
 }
 
 float PlacementAnnealer::estimate_starting_temperature_() {
@@ -1017,6 +1022,37 @@ const t_annealing_state& PlacementAnnealer::get_annealing_state() const {
 }
 
 bool PlacementAnnealer::outer_loop_update_state() {
+    // [PHASE 7.2/7.4] Budgeted Scouting: Stop early if scout_limit or scout_success_target reached
+    bool stop_by_steps = (placer_opts_.scout_limit > 0 && annealing_state_.num_temps >= placer_opts_.scout_limit);
+    bool stop_by_success = (placer_opts_.scout_success_target > 0 && 
+                            annealing_state_.num_temps > 10 && // Allow burn-in
+                            placer_stats_.success_rate < placer_opts_.scout_success_target);
+
+    if (stop_by_steps || stop_by_success) {
+        if (!placer_opts_.scout_log_file.empty()) {
+            std::ofstream out(placer_opts_.scout_log_file);
+            if (out) {
+                extern double g_adaptive_momentum_scaler;
+                double gain = (initial_timing_cost_ - costs_.timing_cost);
+                double score = gain * g_adaptive_momentum_scaler;
+                out << "# InitialCost,FinalCost,Gain,Momentum,PBScore" << std::endl;
+                out << std::fixed << std::setprecision(6) 
+                    << initial_timing_cost_ << "," 
+                    << costs_.timing_cost << ","
+                    << gain << "," 
+                    << g_adaptive_momentum_scaler << "," 
+                    << score << std::endl;
+            }
+        }
+        if (stop_by_steps) {
+            VTR_LOG("SCOUT_STOP: Reached budget limit of %d temperature steps. PB-Score recorded.\n", placer_opts_.scout_limit);
+        } else {
+            VTR_LOG("SCOUT_STOP: Reached success target of %.4f (Current: %.4f) at step %d. PB-Score recorded.\n", 
+                    placer_opts_.scout_success_target, placer_stats_.success_rate, annealing_state_.num_temps);
+        }
+        return false; // Stop annealing
+    }
+
     return annealing_state_.outer_loop_update(placer_stats_.success_rate, congestion_modeling_started_, costs_, placer_opts_);
 }
 

@@ -752,6 +752,9 @@ static void setup_placer_opts(const t_options& Options, t_placer_opts* PlacerOpt
     PlacerOpts->prob_entropy_sharpening = Options.prob_entropy_sharpening.value();
     PlacerOpts->prob_hallucination_dampen = Options.prob_hallucination_dampen.value();
     PlacerOpts->prob_momentum_boost = Options.prob_momentum_boost.value();
+    PlacerOpts->scout_limit = Options.scout_limit.value();
+    PlacerOpts->scout_success_target = Options.scout_success_target.value();
+    PlacerOpts->scout_log_file = Options.scout_log_file.value();
 
     PlacerOpts->place_auto_init_t_scale = Options.place_auto_init_t_scale.value();
     PlacerOpts->anneal_init_t_estimator = Options.place_init_t_estimator.value();

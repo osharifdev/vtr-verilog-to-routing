@@ -349,6 +349,8 @@ class PlacementAnnealer {
     /// Indicates whether routing congestion modeling has been started
     bool congestion_modeling_started_;
 
+    double initial_timing_cost_ = 0.0;
+
     void LOG_MOVE_STATS_HEADER();
     void LOG_MOVE_STATS_PROPOSED();
     void LOG_MOVE_STATS_OUTCOME(double delta_cost, double delta_bb_cost, double delta_td_cost, const char* outcome, const char* reason);

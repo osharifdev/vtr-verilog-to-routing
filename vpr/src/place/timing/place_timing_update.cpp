@@ -44,9 +44,8 @@ static e_prob_dist_func g_cached_prob_dist_func = e_prob_dist_func::LINEAR;
 static float g_cached_prob_dist_threshold = 0.0f;
 static float g_cached_prob_huber_delta = 20.0f;
 static ClbNetPinsMatrix<float> g_prob_differential_crit;
-static double g_last_deterministic_cpd = -1.0;
-static double g_adaptive_momentum_scaler = 1.0;
-static double g_hallucination_dampener = 1.0;
+double g_last_deterministic_cpd = -1.0;
+double g_adaptive_momentum_scaler = 1.0;
 
 struct ProbStep2Event {
     ProbStep2Event(size_t uid, double dWNS, double dCPD, int dWEP, double dWEPS,
@@ -442,6 +441,7 @@ void perform_full_timing_update(const t_placer_opts& placer_opts,
             config.slack_gate = crit_params.prob_slack_gate;
             config.hallucination_dampen = crit_params.prob_hallucination_dampen;
             config.momentum_boost = crit_params.prob_momentum_boost;
+            config.min_slack = min_slack; // [PHASE 7.1] Relative Slack
 
             float lambda = placer_opts.prob_inject_lambda;
 
@@ -519,6 +519,7 @@ void perform_full_timing_update(const t_placer_opts& placer_opts,
             } else if (mode == "regularize") {
                 double ref_s = std::max(1e-15, -(double)det_WNS_s);
                 double risk_norm = std::min(5.0, risk_s / ref_s);
+                float det_cpd_ns = (float)det_CPD_s * 1e9f;
                 
                 // [NEW] Populate Adaptive Differential Criticality Matrix BEFORE cost calculation
                 // Gate: Only inject on benchmarks with sufficient graph size (>=5000 nodes).
@@ -536,7 +537,7 @@ void perform_full_timing_update(const t_placer_opts& placer_opts,
                     double total_diff = 0.0;
                     float max_diff = 0.0f;
                     int diff_p_count = 0;
-                    float det_cpd_ns = (float)det_CPD_s * 1e9f;
+                    // det_cpd_ns moved to outer scope
                     float max_required = std::max(1e-12f, (float)det_CPD_s);
 
                     const auto& pin_lookup = criticalities->pin_lookup();
@@ -570,15 +571,51 @@ void perform_full_timing_update(const t_placer_opts& placer_opts,
                             }
                             // Differential component scaled by Fanout Dampener
                             float diff = std::max(0.0f, prob_crit - det_crit) * fanout_dampener;
+
+                            // [PHASE 7.1] Census-Gating (Noise Pruning)
+                            // Only allow the engine to act as a tie-breaker on paths that are already critical.
+                            if (crit_params.prob_census_threshold > 0.0f && det_crit < crit_params.prob_census_threshold) {
+                                diff = 0.0f;
+                            }
+
                             g_prob_differential_crit[net_id][ipin] = diff;
                             total_diff += (double)diff;
                             max_diff = std::max(max_diff, diff);
                             if (diff > 0.001) diff_p_count++;
                         }
                     }
-                    VTR_LOG("!!! ADAPTIVE_P5.1_ACTIVATE !!! total_diff=%.4f max_diff=%.4f pins_with_diff=%d det_cpd=%.4f ns risk_norm=%.4f lambda=%.4f\n",
-                            total_diff, (double)max_diff, diff_p_count, (double)det_cpd_ns, (double)risk_norm, (double)lambda);
+                    // [PHASE 7.1] Entropy-Aware Scaling (Confidence Logic)
+                    // If the engine is vague (pointing to many pins), dampen its influence.
+                    if (crit_params.prob_entropy_sharpening && diff_p_count > 0) {
+                        float total_pins = (float)clb_nlist.pins().size();
+                        float sparsity = (float)diff_p_count / total_pins;
+                        // High sparsity (few pins) = High Confidence (1.0)
+                        // Low sparsity (many pins) = Low Confidence (0.05 floor)
+                        float confidence = std::max(0.05f, 1.0f - sparsity);
+                        lambda *= confidence;
+                    }
+
+                    VTR_LOG("!!! ADAPTIVE_P5.1_ACTIVATE !!! total_diff=%.4f max_diff=%.4f pins_with_diff=%d det_cpd=%.4f ns risk_norm=%.4f lambda=%.4f momentum=%.2f\n",
+                            total_diff, (double)max_diff, diff_p_count, (double)det_cpd_ns, (double)risk_norm, (double)lambda, g_adaptive_momentum_scaler);
                 }
+
+                // [PHASE 7.1] Success-Aware Momentum (Growth Engine)
+                // If the engine is helping find real gains, increase its momentum.
+                if (g_last_deterministic_cpd > 0.0) {
+                    double current_cpd_val = (double)det_cpd_ns;
+                    if (current_cpd_val < g_last_deterministic_cpd - 1e-12) {
+                        g_adaptive_momentum_scaler *= (double)crit_params.prob_momentum_boost;
+                        if (g_adaptive_momentum_scaler > 5.0) g_adaptive_momentum_scaler = 5.0;
+                    } else if (current_cpd_val > g_last_deterministic_cpd + 1e-12) {
+                        // Decay momentum on regression
+                        g_adaptive_momentum_scaler /= (double)crit_params.prob_momentum_boost;
+                        if (g_adaptive_momentum_scaler < 1.0) g_adaptive_momentum_scaler = 1.0;
+                    }
+                }
+                g_last_deterministic_cpd = (double)det_cpd_ns;
+
+                // Apply momentum to lambda
+                lambda *= (float)g_adaptive_momentum_scaler;
 
                 // [CHANGED] Store normalization factors for connection-level scaling
                 g_cached_risk_norm = risk_norm;
