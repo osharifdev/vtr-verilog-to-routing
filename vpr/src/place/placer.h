@@ -73,6 +73,11 @@ class Placer {
      */
     void update_global_state();
 
+    const t_placer_costs& costs() const { return costs_; }
+    const tatum::TimingPathInfo& critical_path() const { return critical_path_; }
+    const t_placement_checkpoint& checkpoint() const { return placement_checkpoint_; }
+    PlacerState& mutable_state() { return placer_state_; }
+
   private:
     /// Holds placement algorithm parameters
     const t_placer_opts& placer_opts_;

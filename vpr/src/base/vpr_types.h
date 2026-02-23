@@ -1153,6 +1153,7 @@ struct t_placer_opts {
     int floorplan_num_vertical_partitions;
 
     bool place_quench_only;
+    bool autonomous;
 
     int placer_debug_block;
     int placer_debug_net;

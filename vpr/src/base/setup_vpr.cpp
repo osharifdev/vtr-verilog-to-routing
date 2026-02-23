@@ -723,6 +723,7 @@ static void setup_placer_opts(const t_options& Options, t_placer_opts* PlacerOpt
     PlacerOpts->floorplan_num_horizontal_partitions = Options.floorplan_num_horizontal_partitions;
     PlacerOpts->floorplan_num_vertical_partitions = Options.floorplan_num_vertical_partitions;
     PlacerOpts->place_quench_only = Options.place_quench_only;
+    PlacerOpts->autonomous = Options.autonomous;
     PlacerOpts->seed = Options.seed;
     PlacerOpts->place_algorithm = Options.place_algorithm;
     PlacerOpts->place_static_cost_tolerance = Options.place_static_cost_tolerance;

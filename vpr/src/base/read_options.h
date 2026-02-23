@@ -105,7 +105,7 @@ struct t_options {
     argparse::ArgValue<float> prob_congestion_gamma;
     argparse::ArgValue<bool> prob_schedule_ramp;
 
-    // Server options
+    argparse::ArgValue<bool> autonomous;
     argparse::ArgValue<bool> is_server_mode_enabled;
     argparse::ArgValue<int> server_port_num;
 

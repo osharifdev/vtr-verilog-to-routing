@@ -1771,6 +1771,10 @@ argparse::ArgumentParser create_arg_parser(const std::string& prog_name, t_optio
         .help("Controls whether timing analysis (and timing driven optimizations) are enabled.")
         .default_value("on");
 
+    gen_grp.add_argument<bool, ParseOnOff>(args.autonomous, "--autonomous")
+        .help("Enable C++ Native Autonomous Placement Engine (Strategy C).")
+        .default_value("off");
+
     gen_grp.add_argument<e_timing_update_type, ParseTimingUpdateType>(args.timing_update_type, "--timing_update_type")
         .help(
             "Controls how timing analysis updates are performed:\n"
