@@ -1098,6 +1098,12 @@ struct t_placer_opts {
     std::string move_stats_file;
 
     int placement_saves_per_temperature;
+    
+    // [PHASE 18] Recursive Scouting Metadata
+    bool autonomous;
+    bool autonomous_is_scout;
+    int autonomous_worker_id;
+    void* shm_results_ptr; 
 
     e_place_effort_scaling effort_scaling;
 
@@ -1153,7 +1159,6 @@ struct t_placer_opts {
     int floorplan_num_vertical_partitions;
 
     bool place_quench_only;
-    bool autonomous;
 
     int placer_debug_block;
     int placer_debug_net;

@@ -24,6 +24,7 @@
 #include "PlacerSetupSlacks.h"
 #include "PlacerCriticalities.h"
 #include "vtr_expr_eval.h"
+#include "autonomous_engine.h"
 
 #ifndef NO_GRAPHICS
 #include "draw_global.h"
@@ -855,6 +856,11 @@ void PlacementAnnealer::outer_loop_update_timing_info() {
                                        setup_slacks_,
                                        pin_timing_invalidator_, timing_info_, &costs_, placer_state_);
 
+            // [PHASE 18] Recursive Scouting: Initialize starting cost for gain calculation
+            if (initial_timing_cost_ == 0.0) {
+                initial_timing_cost_ = costs_.timing_cost;
+            }
+
             outer_crit_iter_count_ = 0;
         }
         outer_crit_iter_count_++;
@@ -1022,6 +1028,35 @@ const t_annealing_state& PlacementAnnealer::get_annealing_state() const {
 }
 
 bool PlacementAnnealer::outer_loop_update_state() {
+    // [PHASE 18] Recursive Scouting: Report progress and check for termination
+    if (placer_opts_.autonomous_is_scout && placer_opts_.shm_results_ptr) {
+        t_tournament_result* shm_results = (t_tournament_result*)placer_opts_.shm_results_ptr;
+        int worker_id = placer_opts_.autonomous_worker_id;
+        
+        // Update PB-Score real-time for parent ranking
+        double gain = (initial_timing_cost_ - costs_.timing_cost);
+        extern double g_adaptive_momentum_scaler;
+        shm_results[worker_id].pb_score = gain * g_adaptive_momentum_scaler;
+        shm_results[worker_id].cost = costs_.cost;
+        shm_results[worker_id].cpd = (double)timing_info_->least_slack_critical_path().delay();
+
+        // [PHASE 18] Race Fix: Update progress signal AFTER writing metrics
+        std::atomic_thread_fence(std::memory_order_release);
+        shm_results[worker_id].current_step = annealing_state_.num_temps;
+
+        if (annealing_state_.num_temps % 5 == 0) {
+            VTR_LOG("[CHILD %d] Step %d: Gain=%g, Score=%g, Cost=%g, CPD=%g\n", 
+                    worker_id, annealing_state_.num_temps, gain, 
+                    shm_results[worker_id].pb_score, shm_results[worker_id].cost, shm_results[worker_id].cpd);
+        }
+
+        // Check if parent ordered termination
+        if (shm_results[worker_id].is_terminated) {
+            VTR_LOG("SCOUT_TERMINATED: Terminated by host at step %d (Rank: Loser).\n", annealing_state_.num_temps);
+            _exit(0);
+        }
+    }
+
     // [PHASE 7.2/7.4] Budgeted Scouting: Stop early if scout_limit or scout_success_target reached
     bool stop_by_steps = (placer_opts_.scout_limit > 0 && annealing_state_.num_temps >= placer_opts_.scout_limit);
     bool stop_by_success = (placer_opts_.scout_success_target > 0 && 
@@ -1053,7 +1088,12 @@ bool PlacementAnnealer::outer_loop_update_state() {
         return false; // Stop annealing
     }
 
-    return annealing_state_.outer_loop_update(placer_stats_.success_rate, congestion_modeling_started_, costs_, placer_opts_);
+    bool continue_anneal = annealing_state_.outer_loop_update(placer_stats_.success_rate, congestion_modeling_started_, costs_, placer_opts_);
+    if (!continue_anneal && placer_opts_.autonomous_is_scout && placer_opts_.shm_results_ptr) {
+        t_tournament_result* shm_results = (t_tournament_result*)placer_opts_.shm_results_ptr;
+        shm_results[placer_opts_.autonomous_worker_id].success = true;
+    }
+    return continue_anneal;
 }
 
 void PlacementAnnealer::start_quench() {
