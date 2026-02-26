@@ -27,19 +27,7 @@ enum class e_move_result {
 };
 
 //This is to list all the available moves
-enum class e_move_type {
-    UNIFORM,
-    MEDIAN,
-    CENTROID,
-    W_CENTROID,
-    W_MEDIAN,
-    CRIT_UNIFORM,
-    FEASIBLE_REGION,
-    NOC_ATTRACTION_CENTROID,
-    NUMBER_OF_AUTO_MOVES,
-    MANUAL_MOVE = NUMBER_OF_AUTO_MOVES,
-    INVALID_MOVE
-};
+// (e_move_type is defined in vpr_types.h)
 
 enum class e_create_move {
     VALID, //Move successful and legal

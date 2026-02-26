@@ -38,6 +38,8 @@ namespace vtr {
 class ScopedStartFinishTimer;
 }
 
+#include "raiga.h"
+
 class Placer {
   public:
     Placer(const Netlist<>& net_list,
@@ -45,6 +47,12 @@ class Placer {
            const t_placer_opts& placer_opts,
            const t_analysis_opts& analysis_opts,
            const t_noc_opts& noc_opts,
+           const t_router_opts& router_opts,
+           const t_crr_opts& crr_opts,
+           const t_chan_width_dist& chan_width_dist,
+           const t_det_routing_arch& det_routing_arch,
+           const std::vector<t_segment_inf>& segment_inf,
+           const std::vector<t_direct_inf>& directs,
            const IntraLbPbPinLookup& pb_gpin_lookup,
            const ClusteredPinAtomPinsLookup& netlist_pin_lookup,
            const FlatPlacementInfo& flat_placement_info,
@@ -53,6 +61,8 @@ class Placer {
            bool cube_bb,
            bool is_flat,
            bool quiet);
+
+    bool raiga_probe_done_ = false;
 
     /**
      * @brief Executes the simulated annealing algorithm to optimize placement.
@@ -81,10 +91,17 @@ class Placer {
   private:
     /// Holds placement algorithm parameters
     const t_placer_opts& placer_opts_;
-    /// Holds timing analysis parameters
     const t_analysis_opts& analysis_opts_;
-    /// Holds NoC-related parameters
     const t_noc_opts& noc_opts_;
+
+    // Routing options for RA-IGA probe
+    const t_router_opts& router_opts_;
+    const t_crr_opts& crr_opts_;
+    const t_chan_width_dist& chan_width_dist_;
+    const t_det_routing_arch& det_routing_arch_;
+    const std::vector<t_segment_inf>& segment_inf_;
+    const std::vector<t_direct_inf>& directs_;
+
     /// Enables fast look-up pb graph pins from block pin indices
     const IntraLbPbPinLookup& pb_gpin_lookup_;
     /// Enables fast look-up of atom pins connect to CLB pins
@@ -126,6 +143,9 @@ class Placer {
     std::unique_ptr<NetPinTimingInvalidator> pin_timing_invalidator_;
     /// Stores information about the critical path. This is usually updated after that timing info is updated.
     tatum::TimingPathInfo critical_path_;
+
+    bool raiga_cp1_done_ = false;
+    std::unique_ptr<raiga::IncrementalRudy> inc_rudy_;
 
     /// Performs random swaps and implements the simulated annealer optimizer.
     std::unique_ptr<PlacementAnnealer> annealer_;

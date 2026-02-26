@@ -163,6 +163,28 @@ enum class e_cluster_seed {
     BLEND2
 };
 
+enum class e_prob_dist_func {
+    LINEAR,
+    STEP,
+    QUADRATIC,
+    HUBER,
+    UNDEFINED_DIST
+};
+
+enum class e_move_type {
+    UNIFORM,
+    MEDIAN,
+    CENTROID,
+    W_CENTROID,
+    W_MEDIAN,
+    CRIT_UNIFORM,
+    FEASIBLE_REGION,
+    NOC_ATTRACTION_CENTROID,
+    NUMBER_OF_AUTO_MOVES,
+    MANUAL_MOVE = NUMBER_OF_AUTO_MOVES,
+    INVALID_MOVE
+};
+
 struct t_ext_pin_util {
     t_ext_pin_util() = default;
     t_ext_pin_util(float in, float out)
@@ -987,14 +1009,7 @@ enum class e_anneal_init_t_estimator {
     EQUILIBRIUM,   ///<Estimate the initial temperature by predicting the equilibrium temperature for the initial placement.
 };
 
-enum class e_move_type;
 
-enum class e_prob_dist_func {
-    LINEAR,
-    STEP,
-    QUADRATIC,
-    HUBER
-};
 
 /// @brief Various options for the placer.
 struct t_placer_opts {
@@ -1162,6 +1177,44 @@ struct t_placer_opts {
 
     int placer_debug_block;
     int placer_debug_net;
+
+    // RA-IGA flags
+    bool raiga_enable = false;
+    bool raiga_probe_route_enable = true;
+    
+    int raiga_K = 8;
+    int raiga_K1 = 4;
+    float raiga_S1 = 0.12f;
+    float raiga_S2 = 0.35f;
+
+    int raiga_bins_x = 32;
+    int raiga_bins_y = 32;
+    float raiga_rudy_theta = 0.0f;
+    // We'll use a string for the enum in t_placer_opts or just define it here.
+    // Let's keep it simple as an enum class.
+    
+    float raiga_eta_start = 0.0f;
+    float raiga_eta_end = 1.0f;
+    float raiga_eta_ramp_start = 0.30f;
+    float raiga_eta_ramp_end = 0.70f;
+    bool raiga_critical_weighting = true;
+
+    // Probe route
+    int raiga_probe_route_max_iters = 5;
+    float raiga_probe_route_time_cap_s = 60.0f;
+
+    // Gating
+    float raiga_gate_total_overflow = -1.0f;
+    float raiga_gate_max_overflow = -1.0f;
+    bool raiga_gate_require_improving = true;
+
+    std::string raiga_hotspot_mode = "squared_over_theta";
+    std::string raiga_score_mode = "hard_gate_then_timing";
+
+    // Debug & Logging
+    std::string raiga_log_csv;
+    bool raiga_debug = false;
+    int raiga_scout_id = -1;
 
     /**
      * @brief Tile types that should be used during delay sampling.
@@ -1414,6 +1467,9 @@ struct t_router_opts {
     int reorder_rr_graph_nodes_seed = 1;
 
     bool generate_router_lookahead_report;
+
+    // Time limit for routing in seconds (-1.0 for no limit)
+    float router_time_limit_s = -1.0f;
 };
 
 struct t_analysis_opts {

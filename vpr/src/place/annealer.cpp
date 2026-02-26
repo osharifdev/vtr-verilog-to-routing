@@ -1,5 +1,6 @@
 
 #include "annealer.h"
+#include "raiga.h"
 
 #include <algorithm>
 #include <cmath>
@@ -299,7 +300,16 @@ PlacementAnnealer::PlacementAnnealer(const t_placer_opts& placer_opts,
     // Update the starting temperature for placement annealing to a more appropriate value
     VTR_ASSERT_SAFE_MSG(auto_init_t_scale >= 0, "Initial temperature scale cannot be negative.");
     annealing_state_.t = estimate_starting_temperature_() * auto_init_t_scale;
+    initial_t_ = annealing_state_.t;
     initial_timing_cost_ = costs_.timing_cost;
+
+    // Estimate initial exit temperature to ensure p reaches 1.0 reliably
+    const ClusteringContext& cluster_ctx = g_vpr_ctx.clustering();
+    initial_exit_t_ = 0.005 * costs_.cost / cluster_ctx.clb_nlist.nets().size();
+    if (placer_opts.anneal_sched.type == e_sched_type::USER_SCHED) {
+        initial_exit_t_ = placer_opts.anneal_sched.exit_t;
+    }
+
     VTR_LOG("PlacementAnnealer initialized: scout_limit=%d scout_log=%s\n", 
             placer_opts_.scout_limit, placer_opts_.scout_log_file.c_str());
 }
@@ -609,6 +619,29 @@ t_swap_result PlacementAnnealer::try_swap_(MoveGenerator& move_generator,
         // Update the block positions
         blk_loc_registry.apply_move_blocks(blocks_affected_);
 
+        float rudy_eta = 0.0f;
+        double rudy_delta_c = 0.0;
+        if (placer_opts_.raiga_enable && inc_rudy_) {
+            float p = get_progress();
+
+            float r_start = placer_opts_.raiga_eta_ramp_start;
+            float r_end = placer_opts_.raiga_eta_ramp_end;
+            float e_start = placer_opts_.raiga_eta_start;
+            float e_end = placer_opts_.raiga_eta_end;
+
+            if (p <= r_start) {
+                rudy_eta = e_start;
+            } else if (p >= r_end) {
+                rudy_eta = e_end;
+            } else {
+                rudy_eta = e_start + (p - r_start) / std::max(1e-6f, r_end - r_start) * (e_end - e_start);
+            }
+
+            if (rudy_eta > 0.0f) {
+                rudy_delta_c = inc_rudy_->propose_move(blocks_affected_, g_vpr_ctx.clustering().clb_nlist, placer_state_);
+            }
+        }
+
         /* Find all the nets affected by this swap and update the wiring costs.
          * This cost value doesn't depend on the timing info.
          * Also find all the pins affected by the swap, and calculates new connection
@@ -687,6 +720,10 @@ t_swap_result PlacementAnnealer::try_swap_(MoveGenerator& move_generator,
             delta_c += calculate_noc_cost(noc_delta_c, costs_.noc_cost_norm_factors, noc_opts_);
         }
 
+        if (rudy_eta > 0.0f) {
+            delta_c += rudy_eta * rudy_delta_c;
+        }
+
         // determine whether the move is accepted or rejected
         move_outcome = assess_swap_(delta_c, annealing_state_.t);
 
@@ -701,6 +738,10 @@ t_swap_result PlacementAnnealer::try_swap_(MoveGenerator& move_generator,
             costs_.cost += delta_c;
             costs_.bb_cost += bb_delta_c;
             costs_.congestion_cost += congestion_delta_c;
+
+            if (placer_opts_.raiga_enable && inc_rudy_ && rudy_eta > 0.0f) {
+                inc_rudy_->commit_move();
+            }
 
             if (place_algorithm == e_place_algorithm::CRITICALITY_TIMING_PLACE) {
                 costs_.timing_cost += timing_delta_c;
@@ -728,6 +769,10 @@ t_swap_result PlacementAnnealer::try_swap_(MoveGenerator& move_generator,
 
             // Update clb data structures since we kept the move.
             blk_loc_registry.commit_move_blocks(blocks_affected_);
+
+            if (placer_opts_.raiga_enable && inc_rudy_ && rudy_eta > 0.0f) {
+                // inc_rudy_->revert_move() was here mistakenly
+            }
 
             if (noc_opts_.noc) {
                 noc_cost_handler_->commit_noc_costs();
@@ -773,6 +818,10 @@ t_swap_result PlacementAnnealer::try_swap_(MoveGenerator& move_generator,
                 VTR_ASSERT_SAFE_MSG(
                     verify_connection_setup_slacks(setup_slacks_, placer_state_),
                     "The current setup slacks should be identical to the values before the try swap timing info update.");
+            }
+
+            if (placer_opts_.raiga_enable && inc_rudy_ && rudy_eta > 0.0f) {
+                inc_rudy_->revert_move();
             }
 
             // Revert the traffic flow routes within the NoC
@@ -1013,6 +1062,45 @@ void PlacementAnnealer::placement_inner_loop() {
 
     tot_iter_ += annealing_state_.move_lim;
     ++annealing_state_.num_temps;
+
+    if (placer_opts_.raiga_enable && inc_rudy_) {
+        float p = get_progress();
+
+        float r_start = placer_opts_.raiga_eta_ramp_start;
+        float r_end = placer_opts_.raiga_eta_ramp_end;
+        float e_start = placer_opts_.raiga_eta_start;
+        float e_end = placer_opts_.raiga_eta_end;
+        float eta = 0.0f;
+
+        if (p <= r_start) {
+            eta = e_start;
+        } else if (p >= r_end) {
+            eta = e_end;
+        } else {
+            eta = e_start + (p - r_start) / std::max(1e-6f, r_end - r_start) * (e_end - e_start);
+        }
+
+        float peak = inc_rudy_->get_peak_demand();
+        float hotspot = inc_rudy_->get_hotspot_cost();
+        int step = annealing_state_.num_temps - 1;
+        float dynamic_total_steps = (p > 0.001f) ? (step / p) : 0.0f;
+        int total_steps = (int)std::round(dynamic_total_steps);
+
+        VTR_LOG("RAIGA_STEP5 scout=%d step=%d/%d p=%.4f eta=%.4f peak=%.4f hotspot=%.4f\n",
+                placer_opts_.raiga_scout_id, step, total_steps, p, eta, peak, hotspot);
+        fflush(stdout);
+
+        if (!placer_opts_.raiga_log_csv.empty()) {
+            FILE* f = fopen(placer_opts_.raiga_log_csv.c_str(), "a");
+            if (f) {
+                auto netlist_name = g_vpr_ctx.atom().netlist().netlist_name();
+                fprintf(f, "%s,%d,%d,%d,%d,%.4f,%.4f,%.4f,%.4f\n",
+                        netlist_name.c_str(), placer_opts_.seed, placer_opts_.raiga_scout_id,
+                        step, total_steps, p, eta, peak, hotspot);
+                fclose(f);
+            }
+        }
+    }
 }
 
 int PlacementAnnealer::get_total_iteration() const {
@@ -1025,6 +1113,25 @@ e_agent_state PlacementAnnealer::get_agent_state() const {
 
 const t_annealing_state& PlacementAnnealer::get_annealing_state() const {
     return annealing_state_;
+}
+
+float PlacementAnnealer::get_progress() const {
+    float current_t = annealing_state_.t;
+    float exit_t = initial_exit_t_;
+    float init_t = initial_t_;
+
+    // Handle degenerate cases where T_init <= T_exit
+    if (init_t <= exit_t * 1.001f) {
+        // If we start already at or below exit temp, p is 1.0
+        return 1.0f;
+    }
+
+    float log_ratio_denom = std::log(init_t / exit_t);
+    float p = 1.0f - (std::log(std::max(current_t, exit_t) / exit_t) / log_ratio_denom);
+    
+    if (p < 0.0f) p = 0.0f;
+    if (p > 1.0f) p = 1.0f;
+    return p;
 }
 
 bool PlacementAnnealer::outer_loop_update_state() {

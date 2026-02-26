@@ -897,6 +897,7 @@ void vpr_place(const Netlist<>& net_list,
                                                                                      g_vpr_ctx.atom().netlist());
     }
 
+    VTR_LOG("  [DEBUG] vpr_place: calling try_place\n"); fflush(stdout);
     try_place(net_list,
               vpr_setup.PlacerOpts,
               vpr_setup.RouterOpts,

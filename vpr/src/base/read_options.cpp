@@ -1530,6 +1530,8 @@ struct ParsePostSynthNetlistUnconnOutputHandling {
     }
 };
 
+
+
 struct ParseProbDistFunc {
     ConvertedValue<e_prob_dist_func> from_str(const std::string& str) {
         ConvertedValue<e_prob_dist_func> conv_value;
@@ -2481,6 +2483,104 @@ argparse::ArgumentParser create_arg_parser(const std::string& prog_name, t_optio
         .help("Enable cost clamping for probabilistic injection")
         .default_value("on")
         .action(argparse::Action::STORE_TRUE);
+
+    // RA-IGA Options
+    auto& raiga_grp = parser.add_argument_group("RA-IGA options");
+
+    raiga_grp.add_argument<bool, ParseOnOff>(args.raiga_enable, "--raiga_enable")
+        .help("Enable Routability-Aware Inference-Guided Annealing")
+        .default_value("off");
+
+    raiga_grp.add_argument<bool, ParseOnOff>(args.raiga_probe_route_enable, "--raiga_probe_route_enable")
+        .help("Enable probe routing at CP2")
+        .default_value("on");
+
+    raiga_grp.add_argument<int>(args.raiga_K, "--raiga_K")
+        .help("Total number of scouts")
+        .default_value("8");
+
+    raiga_grp.add_argument<int>(args.raiga_K1, "--raiga_K1")
+        .help("Survivors after CP1")
+        .default_value("4");
+
+    raiga_grp.add_argument<float>(args.raiga_S1, "--raiga_S1")
+        .help("Fraction of anneal schedule to trigger CP1 RUDY pruning")
+        .default_value("0.12");
+
+    raiga_grp.add_argument<float>(args.raiga_S2, "--raiga_S2")
+        .help("Fraction of anneal schedule to trigger CP2 probe")
+        .default_value("0.35");
+
+    raiga_grp.add_argument<int>(args.raiga_bins_x, "--raiga_bins_x")
+        .help("Incremental RUDY Grid Bins X")
+        .default_value("32");
+
+    raiga_grp.add_argument<int>(args.raiga_bins_y, "--raiga_bins_y")
+        .help("Incremental RUDY Grid Bins Y")
+        .default_value("32");
+
+    raiga_grp.add_argument<float>(args.raiga_rudy_theta, "--raiga_rudy_theta")
+        .help("Deterministic theta for CP1 hotspot cost. Set to 0.0 to auto-derive p90.")
+        .default_value("0.0");
+
+    raiga_grp.add_argument<float>(args.raiga_eta_start, "--raiga_eta_start")
+        .help("eta start for congestion aware move cost")
+        .default_value("0.0");
+
+    raiga_grp.add_argument<float>(args.raiga_eta_end, "--raiga_eta_end")
+        .help("eta end for congestion aware move cost")
+        .default_value("1.0");
+
+    raiga_grp.add_argument<float>(args.raiga_eta_ramp_start, "--raiga_eta_ramp_start")
+        .help("eta ramp start for congestion aware move cost")
+        .default_value("0.30");
+
+    raiga_grp.add_argument<float>(args.raiga_eta_ramp_end, "--raiga_eta_ramp_end")
+        .help("eta ramp end for congestion aware move cost")
+        .default_value("0.70");
+
+    raiga_grp.add_argument<bool, ParseOnOff>(args.raiga_critical_weighting, "--raiga_critical_weighting")
+        .help("Weight congestion by timing criticality")
+        .default_value("on");
+
+    raiga_grp.add_argument<int>(args.raiga_probe_route_max_iters, "--raiga_probe_route_max_iters")
+        .help("Maximum iterations for probe routing")
+        .default_value("5");
+
+    raiga_grp.add_argument<float>(args.raiga_probe_route_time_cap_s, "--raiga_probe_route_time_cap_s")
+        .help("Wall-clock time cap for probe routing (seconds)")
+        .default_value("60.0");
+
+    raiga_grp.add_argument<float>(args.raiga_gate_total_overflow, "--raiga_gate_total_overflow")
+        .help("Gate total overflow")
+        .default_value("-1.0");
+
+    raiga_grp.add_argument<float>(args.raiga_gate_max_overflow, "--raiga_gate_max_overflow")
+        .help("Gate max overflow")
+        .default_value("-1.0");
+
+    raiga_grp.add_argument<bool, ParseOnOff>(args.raiga_gate_require_improving, "--raiga_gate_require_improving")
+        .help("Require overflow slope to be decreasing")
+        .default_value("on");
+
+    raiga_grp.add_argument<std::string>(args.raiga_hotspot_mode, "--raiga_hotspot_mode")
+        .help("Hotspot scoring mode")
+        .default_value("squared_over_theta");
+
+    raiga_grp.add_argument<std::string>(args.raiga_score_mode, "--raiga_score_mode")
+        .help("Scouting winner score mode")
+        .default_value("hard_gate_then_timing");
+
+    raiga_grp.add_argument<std::string>(args.raiga_log_csv, "--raiga_log_csv")
+        .help("CSV file to append RA-IGA tracking results");
+
+    raiga_grp.add_argument<bool, ParseOnOff>(args.raiga_debug, "--raiga_debug")
+        .help("Enable deep tracking for RA-IGA execution details")
+        .default_value("off");
+
+    raiga_grp.add_argument<int>(args.raiga_scout_id, "--raiga_scout_id")
+        .help("MPI Node ID for CSV tracking")
+        .default_value("-1");
 
     place_grp.add_argument(args.place_static_cost_tolerance, "--place_static_cost_tolerance")
         .help("Global error tolerance for static cost validation (debug check)")

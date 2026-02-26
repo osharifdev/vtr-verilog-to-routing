@@ -305,6 +305,15 @@ struct t_options {
     argparse::ArgValue<e_router_initial_timing> router_initial_timing;
     argparse::ArgValue<e_heap_type> router_heap;
 
+    // RR Graph modification options
+    argparse::ArgValue<std::string> sb_maps;
+    argparse::ArgValue<std::string> sb_templates;
+    argparse::ArgValue<bool> preserve_input_pin_connections;
+    argparse::ArgValue<bool> preserve_output_pin_connections;
+    argparse::ArgValue<bool> annotated_rr_graph;
+    argparse::ArgValue<bool> remove_dangling_nodes;
+    argparse::ArgValue<std::string> sb_count_dir;
+
     // Analysis options
     argparse::ArgValue<bool> full_stats;
     argparse::ArgValue<bool> Generate_Post_Synthesis_Netlist;
@@ -321,14 +330,31 @@ struct t_options {
     argparse::ArgValue<bool> skip_sync_clustering_and_routing_results;
     argparse::ArgValue<bool> generate_net_timing_report;
 
-    /* CRR options */
-    argparse::ArgValue<std::string> sb_maps;
-    argparse::ArgValue<std::string> sb_templates;
-    argparse::ArgValue<bool> preserve_input_pin_connections;
-    argparse::ArgValue<bool> preserve_output_pin_connections;
-    argparse::ArgValue<bool> annotated_rr_graph;
-    argparse::ArgValue<bool> remove_dangling_nodes;
-    argparse::ArgValue<std::string> sb_count_dir;
+    /* RA-IGA Options */
+    argparse::ArgValue<bool> raiga_enable;
+    argparse::ArgValue<bool> raiga_probe_route_enable;
+    argparse::ArgValue<int> raiga_K;
+    argparse::ArgValue<int> raiga_K1;
+    argparse::ArgValue<float> raiga_S1;
+    argparse::ArgValue<float> raiga_S2;
+    argparse::ArgValue<int> raiga_bins_x;
+    argparse::ArgValue<int> raiga_bins_y;
+    argparse::ArgValue<float> raiga_rudy_theta;
+    argparse::ArgValue<float> raiga_eta_start;
+    argparse::ArgValue<float> raiga_eta_end;
+    argparse::ArgValue<float> raiga_eta_ramp_start;
+    argparse::ArgValue<float> raiga_eta_ramp_end;
+    argparse::ArgValue<bool> raiga_critical_weighting;
+    argparse::ArgValue<int> raiga_probe_route_max_iters;
+    argparse::ArgValue<float> raiga_probe_route_time_cap_s;
+    argparse::ArgValue<float> raiga_gate_total_overflow;
+    argparse::ArgValue<float> raiga_gate_max_overflow;
+    argparse::ArgValue<bool> raiga_gate_require_improving;
+    argparse::ArgValue<std::string> raiga_hotspot_mode;
+    argparse::ArgValue<std::string> raiga_score_mode;
+    argparse::ArgValue<std::string> raiga_log_csv;
+    argparse::ArgValue<bool> raiga_debug;
+    argparse::ArgValue<int> raiga_scout_id;
 };
 
 argparse::ArgumentParser create_arg_parser(const std::string& prog_name, t_options& args);

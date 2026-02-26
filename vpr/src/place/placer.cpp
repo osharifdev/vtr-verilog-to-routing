@@ -20,6 +20,7 @@
 #include "annealer.h"
 #include "RL_agent_util.h"
 #include "place_checkpoint.h"
+#include "raiga.h"
 #include "tatum/echo_writer.hpp"
 
 #ifndef NO_GRAPHICS
@@ -31,6 +32,12 @@ Placer::Placer(const Netlist<>& net_list,
                const t_placer_opts& placer_opts,
                const t_analysis_opts& analysis_opts,
                const t_noc_opts& noc_opts,
+               const t_router_opts& router_opts,
+               const t_crr_opts& crr_opts,
+               const t_chan_width_dist& chan_width_dist,
+               const t_det_routing_arch& det_routing_arch,
+               const std::vector<t_segment_inf>& segment_inf,
+               const std::vector<t_direct_inf>& directs,
                const IntraLbPbPinLookup& pb_gpin_lookup,
                const ClusteredPinAtomPinsLookup& netlist_pin_lookup,
                const FlatPlacementInfo& flat_placement_info,
@@ -42,6 +49,12 @@ Placer::Placer(const Netlist<>& net_list,
     : placer_opts_(placer_opts)
     , analysis_opts_(analysis_opts)
     , noc_opts_(noc_opts)
+    , router_opts_(router_opts)
+    , crr_opts_(crr_opts)
+    , chan_width_dist_(chan_width_dist)
+    , det_routing_arch_(det_routing_arch)
+    , segment_inf_(segment_inf)
+    , directs_(directs)
     , pb_gpin_lookup_(pb_gpin_lookup)
     , netlist_pin_lookup_(netlist_pin_lookup)
     , costs_(placer_opts.place_algorithm, noc_opts.noc)
@@ -52,6 +65,8 @@ Placer::Placer(const Netlist<>& net_list,
     , log_printer_(*this, quiet)
     , quench_only_(placer_opts.place_quench_only)
     , is_flat_(is_flat) {
+    VTR_LOG("  [DEBUG] Entering Placer constructor\n");
+    fflush(stdout);
     const auto& cluster_ctx = g_vpr_ctx.clustering();
 
     pre_place_timing_stats_ = g_vpr_ctx.timing().stats;
@@ -305,6 +320,8 @@ int Placer::check_placement_costs_() {
 }
 
 void Placer::place() {
+    VTR_LOG("  [DEBUG] Entering Placer::place()\n");
+    fflush(stdout);
     const auto& timing_ctx = g_vpr_ctx.timing();
     const auto& cluster_ctx = g_vpr_ctx.clustering();
     bool analytic_place_enabled = false;
@@ -315,8 +332,10 @@ void Placer::place() {
 
         // Outer loop of the simulated annealing begins
         do {
+            VTR_LOG("  [DEBUG] Placer::place() loop start\n"); fflush(stdout);
             vtr::Timer temperature_timer;
 
+            VTR_LOG("  [DEBUG] Placer::place() - outer_loop_update_timing_info\n"); fflush(stdout);
             annealer_->outer_loop_update_timing_info();
 
             if (placer_opts_.place_algorithm.is_timing_driven()) {
@@ -331,7 +350,117 @@ void Placer::place() {
             }
 
             // do a complete inner loop iteration
+            VTR_LOG("  [DEBUG] Placer::place() - placement_inner_loop\n"); fflush(stdout);
             annealer_->placement_inner_loop();
+
+            if (placer_opts_.raiga_enable) {
+                float p = annealer_->get_progress();
+                int current_temp_count = annealer_->get_annealing_state().num_temps;
+                
+                // Estimate total steps based on current progress
+                float dynamic_total_steps = (p > 0.001f) ? (current_temp_count / p) : 0.0f;
+                int total_steps = (int)std::round(dynamic_total_steps);
+
+                // Condensed debug print for RA-IGA progress
+                if (current_temp_count % 10 == 1 || (p > 0.04f && current_temp_count % 5 == 0)) {
+                    VTR_LOG("  [RAIGA_DEBUG] step=%d/%d T=%g p=%.4f S1=%.2f S2=%.2f\n", 
+                            current_temp_count, total_steps, 
+                            annealer_->get_annealing_state().t, p, 
+                            placer_opts_.raiga_S1, placer_opts_.raiga_S2);
+                    fflush(stdout);
+                }
+
+                // RA-IGA Step 3 Hook: CP1 Cheap Congestion Prune (RUDY)
+                if (!raiga_cp1_done_ && p >= placer_opts_.raiga_S1) {
+                    raiga_cp1_done_ = true;
+                    
+                    auto& device_ctx = g_vpr_ctx.device();
+                    auto cp1_metrics = raiga::compute_rudy_grid(device_ctx.grid, 
+                                                                cluster_ctx.clb_nlist, 
+                                                                placer_state_, 
+                                                                placer_opts_.raiga_rudy_theta);
+
+                    VTR_LOG("RAIGA_CP1_RUDY,%d,%d,CP1,%d,%d,%.4f,%.4f,%.4f,%.4f,%d\n", 
+                            placer_opts_.raiga_scout_id, 
+                            placer_opts_.seed, 
+                            current_temp_count,
+                            total_steps,
+                            cp1_metrics.peak, 
+                            cp1_metrics.p95, 
+                            cp1_metrics.hotspot_cost, 
+                            cp1_metrics.theta_used,
+                            cp1_metrics.num_nets_included);
+
+                    if (!placer_opts_.raiga_log_csv.empty()) {
+                        FILE* f = fopen(placer_opts_.raiga_log_csv.c_str(), "a");
+                        if (f) {
+                            fprintf(f, "%d,%d,CP1,%d,%d,%.4f,%.4f,%.4f,%.4f,%d\n", 
+                                    placer_opts_.raiga_scout_id, 
+                                    placer_opts_.seed, 
+                                    current_temp_count,
+                                    total_steps,
+                                    cp1_metrics.peak, 
+                                    cp1_metrics.p95, 
+                                    cp1_metrics.hotspot_cost, 
+                                    cp1_metrics.theta_used,
+                                    cp1_metrics.num_nets_included);
+                            fclose(f);
+                        }
+                    }
+
+                    // Step 4: Initialize IncrementalRudy map
+                    inc_rudy_ = std::make_unique<raiga::IncrementalRudy>();
+                    inc_rudy_->init(device_ctx.grid, 
+                                    cluster_ctx.clb_nlist, 
+                                    placer_state_, 
+                                    cp1_metrics.theta_used,
+                                    placer_opts_.raiga_bins_x,
+                                    placer_opts_.raiga_bins_y);
+                    annealer_->set_inc_rudy(inc_rudy_.get());
+                }
+
+                // RA-IGA Step 1 Hook: CP2 Probe + Logging
+                if (placer_opts_.raiga_probe_route_enable && !raiga_probe_done_ && p >= placer_opts_.raiga_S2) {
+                    raiga_probe_done_ = true;
+                    VTR_LOG("    [RAIGA_CP2_PROBE] Starting probe for scout_id=%d seed=%d\n", 
+                            placer_opts_.raiga_scout_id, placer_opts_.seed);
+                    fflush(stdout);
+                    
+                    update_global_state();
+                    
+                    auto metrics = raiga::probe_route(cluster_ctx.clb_nlist, 
+                                                      router_opts_, 
+                                                      crr_opts_, 
+                                                      analysis_opts_, 
+                                                      chan_width_dist_, 
+                                                      det_routing_arch_, 
+                                                      segment_inf_, 
+                                                      directs_, 
+                                                      is_flat_, 
+                                                      placer_opts_.raiga_probe_route_max_iters, 
+                                                      placer_opts_.raiga_probe_route_time_cap_s);
+
+                    VTR_LOG("RAIGA_CP2_PROBE,%d,%d,%.0f,%.0f,%.3f\n", 
+                            placer_opts_.raiga_scout_id, 
+                            placer_opts_.seed, 
+                            metrics.total_overflow, 
+                            metrics.max_overflow, 
+                            metrics.runtime_s);
+
+                    if (!placer_opts_.raiga_log_csv.empty()) {
+                        FILE* f = fopen(placer_opts_.raiga_log_csv.c_str(), "a");
+                        if (f) {
+                            fprintf(f, "%d,%d,%.0f,%.0f,%.3f\n", 
+                                    placer_opts_.raiga_scout_id, 
+                                    placer_opts_.seed, 
+                                    metrics.total_overflow, 
+                                    metrics.max_overflow, 
+                                    metrics.runtime_s);
+                            fclose(f);
+                        }
+                    }
+                }
+            }
 
             log_printer_.print_place_status(temperature_timer.elapsed_sec());
 

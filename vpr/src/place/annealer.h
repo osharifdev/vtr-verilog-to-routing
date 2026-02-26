@@ -20,6 +20,10 @@ class NocCostHandler;
 class NetPinTimingInvalidator;
 class PlacerSetupSlacks;
 
+namespace raiga {
+class IncrementalRudy;
+}
+
 /**
  * These variables keep track of the number of swaps
  * rejected, accepted or aborted. The total number of swap attempts
@@ -228,9 +232,12 @@ class PlacementAnnealer {
 
     /// @brief Return the RL agent's state
     e_agent_state get_agent_state() const;
-
+    void set_agent_state(e_agent_state state) { agent_state_ = state; }
+    void set_inc_rudy(raiga::IncrementalRudy* inc_rudy) { inc_rudy_ = inc_rudy; }
     /// @brief Returns a constant reference to the annealing state
     const t_annealing_state& get_annealing_state() const;
+    float get_initial_t() const { return initial_t_; }
+    float get_progress() const;
 
     /// @brief Returns constant references to different statistics objects
     std::tuple<const t_swap_stats&, const MoveTypeStat&, const t_placer_statistics&> get_stats() const;
@@ -242,7 +249,7 @@ class PlacementAnnealer {
      */
     const MoveAbortionLogger& get_move_abortion_logger() const;
 
-  private:
+   private:
     /**
      * @brief Pick some block and moves it to another spot.
      *
@@ -308,6 +315,8 @@ class PlacementAnnealer {
     /// Handles manual swaps proposed by the user through graphical user interface
     ManualMoveGenerator manual_move_generator_;
     /// RL agent state
+    float initial_t_ = -1.0f;
+    raiga::IncrementalRudy* inc_rudy_ = nullptr;
     e_agent_state agent_state_;
 
     const PlaceDelayModel* delay_model_;
@@ -349,7 +358,8 @@ class PlacementAnnealer {
     /// Indicates whether routing congestion modeling has been started
     bool congestion_modeling_started_;
 
-    double initial_timing_cost_ = 0.0;
+    float initial_exit_t_ = 0.0f;
+    float initial_timing_cost_ = 0.0f;
 
     void LOG_MOVE_STATS_HEADER();
     void LOG_MOVE_STATS_PROPOSED();

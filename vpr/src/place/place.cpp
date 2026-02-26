@@ -60,16 +60,19 @@ void try_place(const Netlist<>& net_list,
     FloorplanningContext& mutable_floorplanning = g_vpr_ctx.mutable_floorplanning();
 
     // Initialize the variables in the placement context.
+    VTR_LOG("  [DEBUG] try_place: init_placement_context\n"); fflush(stdout);
     mutable_placement.init_placement_context(placer_opts, directs);
 
     // Re-initialize cluster constraints if erased by a previous placement run.
     // This ensures constraints are available when iterating to find the minimum channel width.
     if (mutable_floorplanning.cluster_constraints.empty()) {
+        VTR_LOG("  [DEBUG] try_place: update_floorplanning_context_post_pack\n"); fflush(stdout);
         mutable_floorplanning.update_floorplanning_context_post_pack();
     }
 
     // Update the floorplanning constraints with the macro information from the
     // placement context.
+    VTR_LOG("  [DEBUG] try_place: update_floorplanning_context_pre_place\n"); fflush(stdout);
     mutable_floorplanning.update_floorplanning_context_pre_place(*mutable_placement.place_macros);
 
     VTR_LOG("\n");
@@ -191,7 +194,7 @@ void try_place(const Netlist<>& net_list,
                 scout_opts.scout_limit = scout_limit;
                 scout_opts.scout_success_target = scout_success_target;
                 
-                Placer scout_placer(net_list, {}, scout_opts, analysis_opts, noc_opts, pb_gpin_lookup, netlist_pin_lookup,
+                Placer scout_placer(net_list, {}, scout_opts, analysis_opts, noc_opts, router_opts, crr_opts, chan_width_dist, det_routing_arch, segment_inf, directs, pb_gpin_lookup, netlist_pin_lookup,
                                     flat_placement_info, place_delay_model, scout_opts.place_auto_init_t_scale,
                                     mutable_placement.cube_bb, is_flat, /*quiet=*/true);
                 scout_placer.place();
@@ -331,7 +334,7 @@ void try_place(const Netlist<>& net_list,
                 exploit_opts.seed = s;
                 exploit_opts.scout_limit = 0;
                 
-                Placer exploit_placer(net_list, {}, exploit_opts, analysis_opts, noc_opts, pb_gpin_lookup, netlist_pin_lookup,
+                Placer exploit_placer(net_list, {}, exploit_opts, analysis_opts, noc_opts, router_opts, crr_opts, chan_width_dist, det_routing_arch, segment_inf, directs, pb_gpin_lookup, netlist_pin_lookup,
                                       flat_placement_info, place_delay_model, exploit_opts.place_auto_init_t_scale,
                                       mutable_placement.cube_bb, is_flat, /*quiet=*/true);
                 exploit_placer.place();
@@ -368,7 +371,7 @@ void try_place(const Netlist<>& net_list,
                 exploit_opts.seed = s;
                 exploit_opts.scout_limit = 0;
                 
-                Placer exploit_placer(net_list, {}, exploit_opts, analysis_opts, noc_opts, pb_gpin_lookup, netlist_pin_lookup,
+                Placer exploit_placer(net_list, {}, exploit_opts, analysis_opts, noc_opts, router_opts, crr_opts, chan_width_dist, det_routing_arch, segment_inf, directs, pb_gpin_lookup, netlist_pin_lookup,
                                       flat_placement_info, place_delay_model, exploit_opts.place_auto_init_t_scale,
                                       mutable_placement.cube_bb, is_flat, /*quiet=*/true);
                 exploit_placer.place();
@@ -415,7 +418,7 @@ void try_place(const Netlist<>& net_list,
         // Use a dummy placer to hold the state, then update global
         t_placer_opts sync_opts = placer_opts;
         sync_opts.scout_limit = 0;
-        Placer sync_placer(net_list, {}, sync_opts, analysis_opts, noc_opts, pb_gpin_lookup, netlist_pin_lookup,
+        Placer sync_placer(net_list, {}, sync_opts, analysis_opts, noc_opts, router_opts, crr_opts, chan_width_dist, det_routing_arch, segment_inf, directs, pb_gpin_lookup, netlist_pin_lookup,
                             flat_placement_info, place_delay_model, placer_opts.place_auto_init_t_scale,
                             mutable_placement.cube_bb, is_flat, /*quiet=*/true);
         
@@ -428,7 +431,7 @@ void try_place(const Netlist<>& net_list,
         }
         system("rm -f autonomous_temp_*.place");
     } else {
-        Placer placer(net_list, {}, placer_opts, analysis_opts, noc_opts, pb_gpin_lookup, netlist_pin_lookup,
+        Placer placer(net_list, {}, placer_opts, analysis_opts, noc_opts, router_opts, crr_opts, chan_width_dist, det_routing_arch, segment_inf, directs, pb_gpin_lookup, netlist_pin_lookup,
                       flat_placement_info, place_delay_model, placer_opts.place_auto_init_t_scale,
                       mutable_placement.cube_bb, is_flat, /*quiet=*/false);
 

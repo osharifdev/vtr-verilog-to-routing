@@ -56,6 +56,8 @@ static void setup_packer_opts(const t_options& Options,
  */
 static void setup_placer_opts(const t_options& Options,
                               t_placer_opts* PlacerOpts);
+// [RAIGA Step 1] Removed t_raiga_opts
+
 static void setup_anneal_sched(const t_options& Options,
                                t_annealing_sched* AnnealSched);
 static void setup_router_opts(const t_options& Options, t_router_opts* RouterOpts);
@@ -557,6 +559,7 @@ static void setup_router_opts(const t_options& Options, t_router_opts* RouterOpt
     RouterOpts->verify_route_file_switch_id = Options.verify_route_file_switch_id;
 
     RouterOpts->generate_router_lookahead_report = Options.generate_router_lookahead_report.value();
+    RouterOpts->router_time_limit_s = Options.raiga_probe_route_time_cap_s;
 }
 
 static void setup_anneal_sched(const t_options& Options,
@@ -759,7 +762,35 @@ static void setup_placer_opts(const t_options& Options, t_placer_opts* PlacerOpt
 
     PlacerOpts->place_auto_init_t_scale = Options.place_auto_init_t_scale.value();
     PlacerOpts->anneal_init_t_estimator = Options.place_init_t_estimator.value();
+
+    // RA-IGA flags
+    PlacerOpts->raiga_enable = Options.raiga_enable;
+    PlacerOpts->raiga_probe_route_enable = Options.raiga_probe_route_enable;
+    PlacerOpts->raiga_K = Options.raiga_K;
+    PlacerOpts->raiga_K1 = Options.raiga_K1;
+    PlacerOpts->raiga_S1 = Options.raiga_S1;
+    PlacerOpts->raiga_S2 = Options.raiga_S2;
+    PlacerOpts->raiga_bins_x = Options.raiga_bins_x;
+    PlacerOpts->raiga_bins_y = Options.raiga_bins_y;
+    PlacerOpts->raiga_rudy_theta = Options.raiga_rudy_theta;
+    PlacerOpts->raiga_eta_start = Options.raiga_eta_start;
+    PlacerOpts->raiga_eta_end = Options.raiga_eta_end;
+    PlacerOpts->raiga_eta_ramp_start = Options.raiga_eta_ramp_start;
+    PlacerOpts->raiga_eta_ramp_end = Options.raiga_eta_ramp_end;
+    PlacerOpts->raiga_critical_weighting = Options.raiga_critical_weighting;
+    PlacerOpts->raiga_probe_route_max_iters = Options.raiga_probe_route_max_iters;
+    PlacerOpts->raiga_probe_route_time_cap_s = Options.raiga_probe_route_time_cap_s;
+    PlacerOpts->raiga_gate_total_overflow = Options.raiga_gate_total_overflow;
+    PlacerOpts->raiga_gate_max_overflow = Options.raiga_gate_max_overflow;
+    PlacerOpts->raiga_gate_require_improving = Options.raiga_gate_require_improving;
+    PlacerOpts->raiga_hotspot_mode = Options.raiga_hotspot_mode.value();
+    PlacerOpts->raiga_score_mode = Options.raiga_score_mode.value();
+    PlacerOpts->raiga_log_csv = Options.raiga_log_csv.value();
+    PlacerOpts->raiga_debug = Options.raiga_debug;
+    PlacerOpts->raiga_scout_id = Options.raiga_scout_id;
 }
+
+
 
 static void setup_analysis_opts(const t_options& Options, t_analysis_opts& analysis_opts) {
     if (Options.do_analysis) {
