@@ -60,19 +60,19 @@ void try_place(const Netlist<>& net_list,
     FloorplanningContext& mutable_floorplanning = g_vpr_ctx.mutable_floorplanning();
 
     // Initialize the variables in the placement context.
-    VTR_LOG("  [DEBUG] try_place: init_placement_context\n"); fflush(stdout);
+
     mutable_placement.init_placement_context(placer_opts, directs);
 
     // Re-initialize cluster constraints if erased by a previous placement run.
     // This ensures constraints are available when iterating to find the minimum channel width.
     if (mutable_floorplanning.cluster_constraints.empty()) {
-        VTR_LOG("  [DEBUG] try_place: update_floorplanning_context_post_pack\n"); fflush(stdout);
+
         mutable_floorplanning.update_floorplanning_context_post_pack();
     }
 
     // Update the floorplanning constraints with the macro information from the
     // placement context.
-    VTR_LOG("  [DEBUG] try_place: update_floorplanning_context_pre_place\n"); fflush(stdout);
+
     mutable_floorplanning.update_floorplanning_context_pre_place(*mutable_placement.place_macros);
 
     VTR_LOG("\n");

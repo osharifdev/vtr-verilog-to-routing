@@ -320,7 +320,7 @@ int Placer::check_placement_costs_() {
 }
 
 void Placer::place() {
-    VTR_LOG("  [DEBUG] Entering Placer::place()\n");
+
     fflush(stdout);
     const auto& timing_ctx = g_vpr_ctx.timing();
     const auto& cluster_ctx = g_vpr_ctx.clustering();
@@ -332,10 +332,10 @@ void Placer::place() {
 
         // Outer loop of the simulated annealing begins
         do {
-            VTR_LOG("  [DEBUG] Placer::place() loop start\n"); fflush(stdout);
+
             vtr::Timer temperature_timer;
 
-            VTR_LOG("  [DEBUG] Placer::place() - outer_loop_update_timing_info\n"); fflush(stdout);
+
             annealer_->outer_loop_update_timing_info();
 
             if (placer_opts_.place_algorithm.is_timing_driven()) {
@@ -350,7 +350,7 @@ void Placer::place() {
             }
 
             // do a complete inner loop iteration
-            VTR_LOG("  [DEBUG] Placer::place() - placement_inner_loop\n"); fflush(stdout);
+
             annealer_->placement_inner_loop();
 
             if (placer_opts_.raiga_enable) {
