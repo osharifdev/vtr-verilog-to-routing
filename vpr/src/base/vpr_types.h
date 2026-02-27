@@ -1198,6 +1198,7 @@ struct t_placer_opts {
     float raiga_eta_ramp_start = 0.30f;
     float raiga_eta_ramp_end = 0.70f;
     bool raiga_critical_weighting = true;
+    float raiga_k = 1.0f;
 
     // Probe route
     int raiga_probe_route_max_iters = 5;

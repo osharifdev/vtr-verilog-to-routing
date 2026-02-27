@@ -777,6 +777,7 @@ static void setup_placer_opts(const t_options& Options, t_placer_opts* PlacerOpt
     PlacerOpts->raiga_eta_end = Options.raiga_eta_end;
     PlacerOpts->raiga_eta_ramp_start = Options.raiga_eta_ramp_start;
     PlacerOpts->raiga_eta_ramp_end = Options.raiga_eta_ramp_end;
+    PlacerOpts->raiga_k = Options.raiga_k;
     PlacerOpts->raiga_critical_weighting = Options.raiga_critical_weighting;
     PlacerOpts->raiga_probe_route_max_iters = Options.raiga_probe_route_max_iters;
     PlacerOpts->raiga_probe_route_time_cap_s = Options.raiga_probe_route_time_cap_s;

@@ -2539,6 +2539,10 @@ argparse::ArgumentParser create_arg_parser(const std::string& prog_name, t_optio
         .help("eta ramp end for congestion aware move cost")
         .default_value("0.70");
 
+    raiga_grp.add_argument<float>(args.raiga_k, "--raiga_k")
+        .help("criticality exponent for weighted rudy (k)")
+        .default_value("1.0");
+
     raiga_grp.add_argument<bool, ParseOnOff>(args.raiga_critical_weighting, "--raiga_critical_weighting")
         .help("Weight congestion by timing criticality")
         .default_value("on");

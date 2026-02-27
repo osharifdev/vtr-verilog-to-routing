@@ -5,6 +5,8 @@
 #include "placer_state.h"
 #include "move_transactions.h"
 
+class PlacerCriticalities;
+
 namespace raiga {
 
 struct ProbeRouteMetrics {
@@ -63,6 +65,16 @@ public:
               int bins_x,
               int bins_y);
 
+    /**
+     * @brief Synchronizes the Rudy grid with the latest net criticalities.
+     * 
+     * This re-projects the entire demand grid using (1-crit)^k weights.
+     */
+    void update_weights(const ClusteredNetlist& net_list, 
+                        const PlacerState& placer_state,
+                        const PlacerCriticalities& criticalities,
+                        float k_exponent = 1.0f);
+
     float propose_move(const t_pl_blocks_to_be_moved& blocks_affected,
                        const ClusteredNetlist& net_list,
                        const PlacerState& placer_state);
@@ -71,8 +83,8 @@ public:
     void revert_move();
 
     bool verify_equivalence(const DeviceGrid& grid,
-                            const ClusteredNetlist& net_list,
-                            const PlacerState& placer_state) const;
+                             const ClusteredNetlist& net_list,
+                             const PlacerState& placer_state) const;
 
     float get_hotspot_cost() const { return current_hotspot_cost_; }
     float get_peak_demand() const;
@@ -92,6 +104,7 @@ private:
         t_bb bbox;
         std::vector<int> covered_bins;
         float demand_per_bin = 0.0f;
+        float weight = 1.0f; // (1 - criticality)^k
     };
     std::vector<CachedNetInfo> net_info_; // Indexed by ClusterNetId
 
@@ -107,6 +120,7 @@ private:
     void compute_net_coverage(ClusterNetId net_id, 
                               const t_bb& bbox,
                               float area, 
+                              float weight,
                               CachedNetInfo& info) const;
     
     t_bb compute_net_bbox(ClusterNetId net_id, 

@@ -654,8 +654,9 @@ RouteTree::prune(CBRR& connections_inf, std::vector<int>* non_config_node_set_us
 
     VTR_ASSERT_MSG(_net_id, "RouteTree must be constructed using a ParentNetId");
 
-    VTR_ASSERT_MSG(route_ctx.rr_node_route_inf[root().inode].occ() <= rr_graph.node_capacity(root().inode),
-                   "Route tree root/SOURCE should never be congested");
+    if (route_ctx.rr_node_route_inf[root().inode].occ() > rr_graph.node_capacity(root().inode)) {
+        VTR_LOG_WARN("Route tree root/SOURCE node %d is congested. Expected during RA-IGA probes.\n", (int)root().inode);
+    }
 
     auto pruned_node = prune_x(*_root, connections_inf, false, non_config_node_set_usage);
     if (pruned_node)

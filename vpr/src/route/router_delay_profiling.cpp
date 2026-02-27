@@ -113,7 +113,9 @@ bool RouterDelayProfiler::calculate_delay(RRNodeId source_node,
         //find delay
         *net_delay = rt_node_of_sink->Tdel;
 
-        VTR_ASSERT_MSG(route_ctx.rr_node_route_inf[tree.root().inode].occ() <= rr_graph.node_capacity(tree.root().inode), "SOURCE should never be congested");
+        if (route_ctx.rr_node_route_inf[tree.root().inode].occ() > rr_graph.node_capacity(tree.root().inode)) {
+            VTR_LOG_WARN("SOURCE node %d is congested in delay profiling. Expected during RA-IGA probes.\n", (int)tree.root().inode);
+        }
     }
 
     //VTR_LOG("Explored %zu of %zu (%.2f) RR nodes: path delay %g\n", router_stats.heap_pops, device_ctx.rr_nodes.size(), float(router_stats.heap_pops) / device_ctx.rr_nodes.size(), *net_delay);

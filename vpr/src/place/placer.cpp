@@ -21,6 +21,7 @@
 #include "RL_agent_util.h"
 #include "place_checkpoint.h"
 #include "raiga.h"
+#include "timing/PlacerCriticalities.h"
 #include "tatum/echo_writer.hpp"
 
 #ifndef NO_GRAPHICS
@@ -349,8 +350,15 @@ void Placer::place() {
                 }
             }
 
-            // do a complete inner loop iteration
+            // RA-IGA Step 6: Synchronize Rudy grid weights with latest criticalities
+            if (placer_opts_.raiga_enable && inc_rudy_) {
+                inc_rudy_->update_weights(cluster_ctx.clb_nlist, 
+                                         placer_state_, 
+                                         *placer_criticalities_, 
+                                         placer_opts_.raiga_k);
+            }
 
+            // do a complete inner loop iteration
             annealer_->placement_inner_loop();
 
             if (placer_opts_.raiga_enable) {
@@ -439,6 +447,8 @@ void Placer::place() {
                                                       is_flat_, 
                                                       placer_opts_.raiga_probe_route_max_iters, 
                                                       placer_opts_.raiga_probe_route_time_cap_s);
+
+                    g_vpr_ctx.mutable_placement().lock_loc_vars(); // Relock AFTER probe completes
 
                     VTR_LOG("RAIGA_CP2_PROBE,%d,%d,%.0f,%.0f,%.3f\n", 
                             placer_opts_.raiga_scout_id, 

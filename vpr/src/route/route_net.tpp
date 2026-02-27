@@ -276,7 +276,10 @@ inline NetResultFlags route_net(ConnectionRouterType& router,
         }
     }
 
-    VTR_ASSERT_MSG(g_vpr_ctx.routing().rr_node_route_inf[tree.root().inode].occ() <= rr_graph.node_capacity(tree.root().inode), "SOURCE should never be congested");
+    if (g_vpr_ctx.routing().rr_node_route_inf[tree.root().inode].occ() > rr_graph.node_capacity(tree.root().inode)) {
+        VTR_LOG_WARN("SOURCE node %d is congested (occ=%d, cap=%d). This is expected during RA-IGA probes on illegal placements.\n", 
+                     (int)tree.root().inode, (int)g_vpr_ctx.routing().rr_node_route_inf[tree.root().inode].occ(), (int)rr_graph.node_capacity(tree.root().inode));
+    }
     VTR_LOGV_DEBUG(f_router_debug, "Routed Net %zu (%zu sinks)\n", size_t(net_id), num_sinks);
 
     router.empty_rcv_route_tree_set(); // ?

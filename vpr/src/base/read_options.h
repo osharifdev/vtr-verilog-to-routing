@@ -344,6 +344,7 @@ struct t_options {
     argparse::ArgValue<float> raiga_eta_end;
     argparse::ArgValue<float> raiga_eta_ramp_start;
     argparse::ArgValue<float> raiga_eta_ramp_end;
+    argparse::ArgValue<float> raiga_k;
     argparse::ArgValue<bool> raiga_critical_weighting;
     argparse::ArgValue<int> raiga_probe_route_max_iters;
     argparse::ArgValue<float> raiga_probe_route_time_cap_s;

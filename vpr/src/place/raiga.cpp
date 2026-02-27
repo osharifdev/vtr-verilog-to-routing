@@ -9,6 +9,7 @@
 #include <limits>
 #include "concrete_timing_info.h"
 #include "placer_state.h"
+#include "timing/PlacerCriticalities.h"
 
 namespace raiga {
 
@@ -25,7 +26,6 @@ ProbeRouteMetrics probe_route(const ClusteredNetlist& net_list,
                              float time_limit_s) {
     VTR_LOG("  [RAIGA] Entered probe_route()\n"); fflush(stdout);
     vtr::Timer probe_timer;
-    auto& route_ctx = g_vpr_ctx.mutable_routing();
     auto& device_ctx = g_vpr_ctx.device();
 
     VTR_LOG("  [RAIGA] Starting CP2 Probe Route (max_iters=%d, time_cap=%.1fs)...\n", max_iters, time_limit_s);
@@ -47,10 +47,29 @@ ProbeRouteMetrics probe_route(const ClusteredNetlist& net_list,
     if (width_fac <= 0) width_fac = 100; // Fallback if not initialized
 
     // 3. Execution using the standard VPR route() entry point.
-    // This will handle RR graph creation (if needed) and struct allocation.
-    NetPinsMatrix<float> net_delay = make_net_pins_matrix<float>(net_list); 
+    // Force allocation using ParentNetId context
+    NetPinsMatrix<float> net_delay = make_net_pins_matrix<float>((const Netlist<>&)net_list); 
     
-    VTR_LOG("  [RAIGA] Calling route()...\n"); fflush(stdout);
+    auto delay_calc = std::make_shared<RoutingDelayCalculator>(g_vpr_ctx.atom().netlist(),
+                                                              g_vpr_ctx.atom().lookup(),
+                                                              net_delay,
+                                                              is_flat);
+
+    std::shared_ptr<SetupHoldTimingInfo> timing_info = make_constant_timing_info(0);
+
+    // CRITICAL: Ensure the global routing context is in a clean, sane state BEFORE route()
+    auto& mutable_routing_ctx = g_vpr_ctx.mutable_routing();
+    
+    VTR_LOG("  [RAIGA] Preparing global routing context...\n"); 
+    mutable_routing_ctx.rr_node_route_inf.resize(device_ctx.rr_graph.num_nodes());
+    for (auto& inf : mutable_routing_ctx.rr_node_route_inf) {
+        inf.set_occ(0);
+        inf.acc_cost = 1.0f;
+    }
+
+    VTR_LOG("  [RAIGA] Calling route()... (algorithm=%d)\n", (int)probe_opts.router_algorithm); 
+    fflush(stdout);
+    
     bool status = route((const Netlist<>&)net_list,
                        width_fac,
                        probe_opts,
@@ -59,22 +78,23 @@ ProbeRouteMetrics probe_route(const ClusteredNetlist& net_list,
                        const_cast<t_det_routing_arch&>(det_routing_arch),
                        const_cast<std::vector<t_segment_inf>&>(segment_inf),
                        net_delay,
-                       make_constant_timing_info(0), // timing_info
-                       nullptr, // delay_calc
+                       timing_info,
+                       delay_calc,
                        chan_width_dist,
                        directs,
                        ScreenUpdatePriority::MINOR,
                        is_flat);
     VTR_LOG("  [RAIGA] route() returned status=%d\n", status); fflush(stdout);
-
+ 
     // 4. Extract Metrics
     ProbeRouteMetrics metrics;
     metrics.runtime_s = probe_timer.elapsed_sec();
     
     size_t total_ovf = 0;
     int max_ovf = 0;
+    VTR_LOG("  [RAIGA] Extracting metrics...\n"); fflush(stdout);
     for (const RRNodeId& rr_id : device_ctx.rr_graph.nodes()) {
-        int occ = route_ctx.rr_node_route_inf[rr_id].occ();
+        int occ = mutable_routing_ctx.rr_node_route_inf[rr_id].occ();
         int capacity = device_ctx.rr_graph.node_capacity(rr_id);
         if (occ > capacity) {
             int overuse = occ - capacity;
@@ -87,21 +107,21 @@ ProbeRouteMetrics probe_route(const ClusteredNetlist& net_list,
 
     VTR_LOG("  [RAIGA] Probe Complete: runtime=%.3fs total_ovf=%.0f max_ovf=%d success=%d\n", 
              metrics.runtime_s, metrics.total_overflow, max_ovf, (int)status);
+    fflush(stdout);
 
-    // 5. Full Reset (Mandatory)
-    // Wipe routing state so g_vpr_ctx is clean for subsequent VPR stages.
-    route_ctx.route_trees.clear();
-    route_ctx.trace_nodes.clear();
+    // 5. Cleanup (Crucial for stability)
+    VTR_LOG("  [RAIGA] Resetting routing state for stability...\n"); fflush(stdout);
+    free_route_structs(); 
     
-    // Reset all occupancy and costs in the route info
-    for (const RRNodeId& rr_id : device_ctx.rr_graph.nodes()) {
-        auto& inf = route_ctx.rr_node_route_inf[rr_id];
+    mutable_routing_ctx.route_trees.clear();
+    mutable_routing_ctx.trace_nodes.clear();
+    for (auto& inf : mutable_routing_ctx.rr_node_route_inf) {
         inf.set_occ(0);
-        inf.path_cost = std::numeric_limits<float>::infinity();
-        inf.backward_path_cost = std::numeric_limits<float>::infinity();
         inf.prev_edge = RREdgeId::INVALID();
-        inf.acc_cost = 1.0f; 
+        inf.path_cost = std::numeric_limits<float>::infinity();
     }
+    
+    VTR_LOG("  [RAIGA] Cleanup complete.\n"); fflush(stdout);
 
     return metrics;
 }
@@ -253,12 +273,14 @@ t_bb IncrementalRudy::compute_net_bbox(ClusterNetId net_id,
     return bbox;
 }
 
-void IncrementalRudy::compute_net_coverage(ClusterNetId net_id, 
+void IncrementalRudy::compute_net_coverage([[maybe_unused]] ClusterNetId net_id, 
                                            const t_bb& bbox,
-                                           float area, 
+                                           [[maybe_unused]] float area, 
+                                           float weight,
                                            CachedNetInfo& info) const {
     info.bbox = bbox;
     info.covered_bins.clear();
+    info.weight = weight;
     
     // Determine overlapped bin rectangle
     int bin_xmin = std::max(0, std::min(bins_x_ - 1, (int)(bbox.xmin / bin_w_)));
@@ -269,8 +291,8 @@ void IncrementalRudy::compute_net_coverage(ClusterNetId net_id,
     int num_bins = (bin_xmax - bin_xmin + 1) * (bin_ymax - bin_ymin + 1);
     num_bins = std::max(1, num_bins); // Safety per spec
     
-    // Demand distribution rule (deterministic)
-    info.demand_per_bin = 1.0f / num_bins;
+    // Demand distribution rule with weighting
+    info.demand_per_bin = weight / num_bins;
     
     // Iteration order MUST be deterministic (y-major order).
     for (int by = bin_ymin; by <= bin_ymax; ++by) {
@@ -310,16 +332,59 @@ void IncrementalRudy::init(const DeviceGrid& grid,
         float area = std::max(1, (bbox.xmax - bbox.xmin + 1) * (bbox.ymax - bbox.ymin + 1));
         
         CachedNetInfo& info = net_info_[(size_t)net_id];
-        compute_net_coverage(net_id, bbox, area, info);
+        compute_net_coverage(net_id, bbox, area, 1.0f, info);
 
         for (int bin_idx : info.covered_bins) {
             D_[bin_idx] += info.demand_per_bin;
         }
     }
 
-    for (size_t i = 0; i < D_.size(); ++i) {
-        if (D_[i] > theta_) {
-            current_hotspot_cost_ += (D_[i] - theta_) * (D_[i] - theta_);
+    current_hotspot_cost_ = 0.0f;
+    for (float d : D_) {
+        if (d > theta_) {
+            current_hotspot_cost_ += (d - theta_) * (d - theta_);
+        }
+    }
+}
+
+void IncrementalRudy::update_weights(const ClusteredNetlist& net_list, 
+                                     const PlacerState& placer_state,
+                                     const PlacerCriticalities& criticalities,
+                                     float k_exponent) {
+    // 1. Zero out the grid
+    std::fill(D_.begin(), D_.end(), 0.0f);
+    
+    // 2. Iterate all nets and re-project weighted demand
+    for (auto net_id : net_list.nets()) {
+        if (is_net_ignored(net_id, net_list)) continue;
+
+        // Fetch max criticality for the net
+        float max_crit = 0.0f;
+        auto net_pins = net_list.net_pins(net_id);
+        for (size_t ipin = 1; ipin < net_pins.size(); ++ipin) {
+            max_crit = std::max(max_crit, criticalities.criticality(net_id, (int)ipin));
+        }
+        
+        // Compute weight: (1 - criticality)^k
+        float weight = std::pow(std::max(0.0f, 1.0f - max_crit), k_exponent);
+        
+        // Re-compute info for this net with the new weight
+        CachedNetInfo& info = net_info_[(size_t)net_id];
+        t_bb bbox = compute_net_bbox(net_id, net_list, placer_state, nullptr);
+        float area = std::max(1, (bbox.xmax - bbox.xmin + 1) * (bbox.ymax - bbox.ymin + 1));
+        
+        compute_net_coverage(net_id, bbox, area, weight, info);
+
+        for (int bin_idx : info.covered_bins) {
+            D_[bin_idx] += info.demand_per_bin;
+        }
+    }
+    
+    // 3. Recompute hotspot cost baseline
+    current_hotspot_cost_ = 0.0f;
+    for (float d : D_) {
+        if (d > theta_) {
+            current_hotspot_cost_ += (d - theta_) * (d - theta_);
         }
     }
 }
@@ -360,7 +425,7 @@ float IncrementalRudy::propose_move(const t_pl_blocks_to_be_moved& blocks_affect
         float new_area = std::max(1, (new_bbox.xmax - new_bbox.xmin + 1) * (new_bbox.ymax - new_bbox.ymin + 1));
         
         CachedNetInfo new_info;
-        compute_net_coverage(net_id, new_bbox, new_area, new_info);
+        compute_net_coverage(net_id, new_bbox, new_area, old_info.weight, new_info);
         
         for (int bin_idx : new_info.covered_bins) {
             delta_map.push_back({bin_idx, new_info.demand_per_bin});
@@ -427,7 +492,7 @@ void IncrementalRudy::revert_move() {
     pending_proposal_ = false;
 }
 
-bool IncrementalRudy::verify_equivalence(const DeviceGrid& grid,
+bool IncrementalRudy::verify_equivalence([[maybe_unused]] const DeviceGrid& grid,
                                          const ClusteredNetlist& net_list,
                                          const PlacerState& placer_state) const {
     std::vector<float> check_D(bins_x_ * bins_y_, 0.0f);
@@ -440,7 +505,7 @@ bool IncrementalRudy::verify_equivalence(const DeviceGrid& grid,
         float area = std::max(1, (bbox.xmax - bbox.xmin + 1) * (bbox.ymax - bbox.ymin + 1));
         
         CachedNetInfo info;
-        compute_net_coverage(net_id, bbox, area, info);
+        compute_net_coverage(net_id, bbox, area, 1.0f, info);
 
         for (int bin_idx : info.covered_bins) {
             check_D[bin_idx] += info.demand_per_bin;
