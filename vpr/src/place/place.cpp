@@ -125,57 +125,33 @@ void try_place(const Netlist<>& net_list,
     // Enables fast look-up of atom pins connect to CLB pins
     ClusteredPinAtomPinsLookup netlist_pin_lookup(cluster_ctx.clb_nlist, atom_ctx.netlist(), pb_gpin_lookup);
 
+    // size_t num_blocks = net_list.blocks().size(); // Removed unused variable
+    
     if (placer_opts.autonomous) {
-        VTR_LOG("\n>>> ENTERING AUTONOMOUS SEARCH-EXPLOIT TOURNAMENT (C++ NATIVE) <<<\n");
-        
-        // --- DYNAMIC SCALING (Logic from Phase 12.1) ---
-        // Initialize Stage 1 limit and target
-        int scout_limit = 50;
-        float scout_success_target = 0.35f;
+        VTR_LOG("\n>>> ENTERING SEARCH-64 AUTONOMOUS TOURNAMENT <<<\n");
+        VTR_LOG("    [PHYSICS] Dynamic lambda annealing (noise fades with temperature) active.\n");
 
-        // [PHASE 15] Scale-aware limits matching Python prototype
-        size_t num_blocks = net_list.blocks().size();
-        if (num_blocks < 2000) {
-            scout_limit = 15;
-            scout_success_target = 0.50f;
-        } else if (num_blocks < 10000) {
-            scout_limit = 25;
-            scout_success_target = 0.45f;
-        }
-        
-        VTR_LOG("    [STAGE 1] Searching Elite 16 (Limit=%d, SuccessTarget=%.2f)...\n", scout_limit, scout_success_target);
-
-        VTR_LOG("    [STAGE 1] Searching Elite 16 (Tiered Cutoffs: 15->45->80)...\n");
-
-        size_t shm_size_s1 = ELITE_16_PORTFOLIO.size() * sizeof(t_tournament_result);
-        t_tournament_result* shm_results_s1 = (t_tournament_result*)mmap(NULL, shm_size_s1, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
-        if (shm_results_s1 == MAP_FAILED) {
-            VTR_LOG_ERROR("Failed to allocate shared memory for Stage 1 tournament.\n");
+        size_t shm_size = 64 * sizeof(t_tournament_result);
+        t_tournament_result* shm_results = (t_tournament_result*)mmap(NULL, shm_size, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+        if (shm_results == MAP_FAILED) {
+            VTR_LOG_ERROR("Failed to allocate shared memory for autonomous tournament.\n");
             return;
         }
+        for (int i=0; i<64; ++i) shm_results[i].success = false;
 
-        // Initialize shared memory
-        for (size_t i = 0; i < ELITE_16_PORTFOLIO.size(); ++i) {
-            shm_results_s1[i] = t_tournament_result();
-            shm_results_s1[i].config_id = ELITE_16_PORTFOLIO[i].id;
-        }
+        VTR_LOG("    Launching 64 Parallel Scouts (Full Placement)...\n");
+        std::fflush(stdout);
 
-        std::vector<pid_t> child_pids;
-        for (size_t i = 0; i < ELITE_16_PORTFOLIO.size(); ++i) {
-            pid_t pid = fork();
-            if (pid == 0) { // Child
-                const auto& config = ELITE_16_PORTFOLIO[i];
+        for (int i = 0; i < 64; ++i) {
+            if (fork() == 0) {
                 t_placer_opts scout_opts = placer_opts;
+                const auto& config = ELITE_16_PORTFOLIO[i % 16];
                 scout_opts.prob_inject_lambda = config.lambda;
                 scout_opts.prob_timing_beta = config.beta;
                 scout_opts.prob_timing_alpha = config.alpha;
                 scout_opts.prob_slack_gate = config.gate;
                 scout_opts.prob_momentum_boost = config.boost;
-                
-                // [PHASE 18] Autonomous Progress Tracking
-                scout_opts.autonomous_is_scout = true;
-                scout_opts.autonomous_worker_id = (int)i;
-                scout_opts.shm_results_ptr = shm_results_s1;
+                scout_opts.seed = (i + 1) * 789; // Diverse seeds
 
                 // Force-enable Autonomous Physics
                 scout_opts.prob_timing_inject = true;
@@ -183,250 +159,64 @@ void try_place(const Netlist<>& net_list,
                 scout_opts.prob_timing_enable = true;
                 scout_opts.prob_timing_mode = 4;
                 scout_opts.place_algorithm = e_place_algorithm::CRITICALITY_TIMING_PLACE;
-                
-                // [PHASE 15] Universal breakthrough: Fast Schedule & Clean Init
-                scout_opts.place_auto_init_t_scale = 0.1; 
-                scout_opts.anneal_sched.alpha_t = 0.70;
 
-                scout_opts.scout_limit = scout_limit;
-                scout_opts.scout_success_target = scout_success_target;
+                scout_opts.autonomous_is_scout = true;
+                scout_opts.shm_results_ptr = (void*)shm_results;
+                scout_opts.autonomous_worker_id = i;
                 
+                // Diversify annealing speed slightly (0.7 to 0.8)
+                scout_opts.anneal_sched.alpha_t = 0.70 + (float)(i % 5) * 0.02;
+
                 Placer scout_placer(net_list, {}, scout_opts, analysis_opts, noc_opts, pb_gpin_lookup, netlist_pin_lookup,
-                                    flat_placement_info, place_delay_model, scout_opts.place_auto_init_t_scale,
-                                    mutable_placement.cube_bb, is_flat, /*quiet=*/true);
+                                      flat_placement_info, place_delay_model, scout_opts.place_auto_init_t_scale,
+                                      mutable_placement.cube_bb, is_flat, /*quiet=*/true);
                 scout_placer.place();
+
+                double final_cpd = 1e9 * (double)scout_placer.critical_path().delay();
+                shm_results[i] = t_tournament_result(config.id, i, scout_placer.costs().cost, final_cpd, 0.0, true);
                 
-                // Update final metrics before exit
-                shm_results_s1[i].cost = scout_placer.costs().cost;
-                shm_results_s1[i].cpd = (double)scout_placer.critical_path().delay();
-                shm_results_s1[i].success = true;
-                
-                _exit(0);
-            }
-            child_pids.push_back(pid);
-        }
-
-        // --- PARENT MONITORING LOOP (Tiered Pruning) ---
-        int checkpoints[] = {15, 45, 80};
-        int survivors_target[] = {8, 4, 1};
-        int current_checkpoint_idx = 0;
-        int active_count = 16;
-
-        while (active_count > 1) {
-            usleep(1000000); // Poll every 1s
-            
-            // Reclaim any finished children
-            for (pid_t pid : child_pids) {
-                int status;
-                if (waitpid(pid, &status, WNOHANG) > 0) {
-                     // Check which worker this was
-                     for (int i=0; i<16; ++i) {
-                         // Note: We don't have a direct map pid->i unless we store it
-                     }
-                }
-            }
-
-            // Check progress of survivors
-            int min_step = 1000;
-            int max_step = 0;
-            int still_alive = 0;
-            for (size_t i = 0; i < 16; ++i) {
-                if (!shm_results_s1[i].is_terminated) {
-                    if (!shm_results_s1[i].success) {
-                        min_step = std::min(min_step, shm_results_s1[i].current_step);
-                        max_step = std::max(max_step, shm_results_s1[i].current_step);
-                        still_alive++;
-                    }
-                }
-            }
-            
-            if (max_step > 0) {
-                fprintf(stderr, "    [MONITOR] Active Scouts: %d, Step Range: [%d, %d]\n", still_alive, min_step, max_step);
-                fflush(stderr);
-            }
-
-            if (current_checkpoint_idx < 3 && min_step >= checkpoints[current_checkpoint_idx] && min_step < 1000) {
-                fprintf(stderr, "    [CHECKPOINT] Step %d reached. Pruning to %d survivors...\n", checkpoints[current_checkpoint_idx], survivors_target[current_checkpoint_idx]);
-                fflush(stderr);
-                
-                // Rank survivors
-                std::vector<int> survivor_indices;
-                for (int i=0; i<16; ++i) if (!shm_results_s1[i].is_terminated && !shm_results_s1[i].success) survivor_indices.push_back(i);
-                
-                std::sort(survivor_indices.begin(), survivor_indices.end(), [&](int a, int b) {
-                    return shm_results_s1[a].pb_score > shm_results_s1[b].pb_score;
-                });
-
-                // Terminate losers
-                for (size_t i = survivors_target[current_checkpoint_idx]; i < survivor_indices.size(); ++i) {
-                    int loser_idx = survivor_indices[i];
-                    shm_results_s1[loser_idx].is_terminated = true;
-                    kill(child_pids[loser_idx], SIGTERM); 
-                    fprintf(stderr, "      [PRUNE] Config %2d (Score: %10g, Step: %2d) -> TERMINATED\n", 
-                             shm_results_s1[loser_idx].config_id, shm_results_s1[loser_idx].pb_score, shm_results_s1[loser_idx].current_step);
-                }
-                fflush(stderr);
-                
-                active_count = survivors_target[current_checkpoint_idx];
-                current_checkpoint_idx++;
-            }
-            
-            if (still_alive == 0) {
-                fprintf(stderr, "    [MONITOR] All children finished. Breaking loop.\n");
-                fflush(stderr);
-                break;
-            }
-        }
-
-        // Wait for final survivors to finish
-        for (int i = 0; i < 16; ++i) wait(NULL);
-        
-        std::vector<t_tournament_result> scout_results;
-        for (size_t i = 0; i < ELITE_16_PORTFOLIO.size(); ++i) {
-            if (shm_results_s1[i].config_id != 0) scout_results.push_back(shm_results_s1[i]);
-        }
-        
-        VTR_LOG("    [STAGE 1] COMPLETE. Picking winner...\n");
-        std::sort(scout_results.begin(), scout_results.end(), [](const t_tournament_result& a, const t_tournament_result& b) {
-            return a.pb_score > b.pb_score; // Higher PBScore is better
-        });
-        
-        int winner1_id = scout_results[0].config_id;
-        // Stage 2 only needs 1 winner now because Stage 1 was so rigorous
-        VTR_LOG("    Tiered Winner: Config %d (PB-Score=%g, CPD=%.4f ns)\n", winner1_id, scout_results[0].pb_score, scout_results[0].cpd * 1e9);
-        
-        // We'll keep Stage 2 as 2 winners for safety or switch to 1? 
-        // Let's stick to 2 winners for diversity in Stage 2.
-        int winner2_id = (scout_results.size() > 1) ? scout_results[1].config_id : winner1_id;
-        VTR_LOG("    Winners: Config %d (Cost=%.2f), Config %d (Cost=%.2f)\n", winner1_id, scout_results[0].cost, winner2_id, scout_results[1].cost);
-
-        // --- STAGE 2: Breakout Attack (Parallel via fork) ---
-        VTR_LOG("    [STAGE 2] Exploiting Top 2 Winners (8 seeds each) in-parallel (fork)...\n");
-        size_t shm_size_s2 = 16 * sizeof(t_tournament_result);
-        t_tournament_result* shm_results_s2 = (t_tournament_result*)mmap(NULL, shm_size_s2, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
-
-        std::fflush(stdout);
-        for (int s = 1; s <= 8; ++s) {
-            if (fork() == 0) { // Winner 1 Child
-                t_placer_opts exploit_opts = placer_opts;
-                auto it = std::find_if(ELITE_16_PORTFOLIO.begin(), ELITE_16_PORTFOLIO.end(), [winner1_id](const t_autonomous_config& c) { return c.id == winner1_id; });
-                const auto& config = *it;
-                exploit_opts.prob_inject_lambda = config.lambda;
-                exploit_opts.prob_timing_beta = config.beta;
-                exploit_opts.prob_timing_alpha = config.alpha;
-                exploit_opts.prob_slack_gate = config.gate;
-                exploit_opts.prob_momentum_boost = config.boost;
-
-                // Force-enable Autonomous Physics
-                exploit_opts.prob_timing_inject = true;
-                exploit_opts.prob_inject_mode = "regularize";
-                exploit_opts.prob_timing_enable = true;
-                exploit_opts.prob_timing_mode = 4;
-                exploit_opts.place_algorithm = e_place_algorithm::CRITICALITY_TIMING_PLACE;
-
-                // [PHASE 15] Universal breakthrough: Fast Schedule & Clean Init
-                exploit_opts.place_auto_init_t_scale = 0.1;
-                exploit_opts.anneal_sched.alpha_t = 0.70;
-
-                exploit_opts.seed = s;
-                exploit_opts.scout_limit = 0;
-                
-                Placer exploit_placer(net_list, {}, exploit_opts, analysis_opts, noc_opts, pb_gpin_lookup, netlist_pin_lookup,
-                                      flat_placement_info, place_delay_model, exploit_opts.place_auto_init_t_scale,
-                                      mutable_placement.cube_bb, is_flat, /*quiet=*/true);
-                exploit_placer.place();
-                shm_results_s2[s-1] = t_tournament_result(winner1_id, s, exploit_placer.costs().cost, (double)exploit_placer.critical_path().delay(), 0.0, true);
-                
-                // Write placement to temp file for sync
-                std::string tmp_file = vtr::string_fmt("autonomous_temp_%d_%d.place", winner1_id, s);
-                print_place("auto_net", "auto_id", tmp_file.c_str(), exploit_placer.mutable_state().block_locs());
-                
-                _exit(0);
-            }
-            std::fflush(stdout);
-            if (fork() == 0) { // Winner 2 Child
-                t_placer_opts exploit_opts = placer_opts;
-                auto it = std::find_if(ELITE_16_PORTFOLIO.begin(), ELITE_16_PORTFOLIO.end(), [winner2_id](const t_autonomous_config& c) { return c.id == winner2_id; });
-                const auto& config = *it;
-                exploit_opts.prob_inject_lambda = config.lambda;
-                exploit_opts.prob_timing_beta = config.beta;
-                exploit_opts.prob_timing_alpha = config.alpha;
-                exploit_opts.prob_slack_gate = config.gate;
-                exploit_opts.prob_momentum_boost = config.boost;
-
-                // Force-enable Autonomous Physics
-                exploit_opts.prob_timing_inject = true;
-                exploit_opts.prob_inject_mode = "regularize";
-                exploit_opts.prob_timing_enable = true;
-                exploit_opts.prob_timing_mode = 4;
-                exploit_opts.place_algorithm = e_place_algorithm::CRITICALITY_TIMING_PLACE;
-
-                // [PHASE 15] Universal breakthrough: Fast Schedule & Clean Init
-                exploit_opts.place_auto_init_t_scale = 0.1;
-                exploit_opts.anneal_sched.alpha_t = 0.70;
-
-                exploit_opts.seed = s;
-                exploit_opts.scout_limit = 0;
-                
-                Placer exploit_placer(net_list, {}, exploit_opts, analysis_opts, noc_opts, pb_gpin_lookup, netlist_pin_lookup,
-                                      flat_placement_info, place_delay_model, exploit_opts.place_auto_init_t_scale,
-                                      mutable_placement.cube_bb, is_flat, /*quiet=*/true);
-                exploit_placer.place();
-                shm_results_s2[8+s-1] = t_tournament_result(winner2_id, s, exploit_placer.costs().cost, (double)exploit_placer.critical_path().delay(), 0.0, true);
-
-                // Write placement to temp file for sync
-                std::string tmp_file = vtr::string_fmt("autonomous_temp_%d_%d.place", winner2_id, s);
-                print_place("auto_net", "auto_id", tmp_file.c_str(), exploit_placer.mutable_state().block_locs());
+                // Save placement to worker-specific file
+                std::string tmp_file = vtr::string_fmt("auto_worker_%d.place", i);
+                print_place("auto", "auto", tmp_file.c_str(), scout_placer.mutable_state().block_locs());
 
                 _exit(0);
             }
         }
-        // Wait for all Stage 2 children
-        for (int i = 0; i < 16; ++i) wait(NULL);
 
-        VTR_LOG("    [STAGE 2] COMPLETE. Aggregating results...\n");
-        t_tournament_result best_final;
-        bool found_valid = false;
-        for (int i = 0; i < 16; ++i) {
-            fprintf(stderr, "      [S2-RESULT] Seed %2d: CPD=%10.4f ns, Cost=%10.4f\n", 
-                     shm_results_s2[i].seed, shm_results_s2[i].cpd * 1e9, shm_results_s2[i].cost);
-            
-            if (shm_results_s2[i].cpd > 0.0) {
-                if (!found_valid || shm_results_s2[i].cpd < best_final.cpd) {
-                    best_final = shm_results_s2[i];
-                    found_valid = true;
-                }
+        for (int i = 0; i < 64; ++i) wait(NULL);
+
+        VTR_LOG("    Search Complete. Selecting best placement...\n");
+        double best_cpd = std::numeric_limits<double>::infinity();
+        int best_worker = -1;
+        for (int i = 0; i < 64; ++i) {
+            if (shm_results[i].success && shm_results[i].cpd < best_cpd) {
+                best_cpd = shm_results[i].cpd;
+                best_worker = i;
             }
         }
-        fflush(stderr);
-        munmap(shm_results_s2, shm_size_s2);
 
-        if (!found_valid) {
-            VTR_LOG_ERROR("Stage 2 failed to produce any valid timing results.\n");
-            // Fallback to Stage 1 winner if needed, but for now we error to catch bugs
+        if (best_worker != -1) {
+            VTR_LOG("    WINNER: Worker %d, CPD=%.4f ns\n", best_worker, best_cpd);
+            std::string win_file = vtr::string_fmt("auto_worker_%d.place", best_worker);
+            
+            // The placement location variables should be unlocked before being accessed
+            auto& placement_ctx = g_vpr_ctx.mutable_placement();
+            placement_ctx.unlock_loc_vars();
+            read_place("auto.net", win_file.c_str(), placement_ctx.mutable_blk_loc_registry(), false, device_ctx.grid);
+            placement_ctx.lock_loc_vars();
         } else {
-            VTR_LOG("    [STAGE 2] WINNER: CPD=%.4f ns (Winner %d, Seed %d). Syncing...\n", 
-                    best_final.cpd * 1e9, best_final.config_id, best_final.seed);
+            VTR_LOG_ERROR("Autonomous search failed to produce any valid results.\n");
         }
 
-        // --- FINAL COMMITTAL: Load placement from file to update global state ---
-        std::string final_tmp_file = vtr::string_fmt("autonomous_temp_%d_%d.place", best_final.config_id, best_final.seed);
-        
-        // Use a dummy placer to hold the state, then update global
-        t_placer_opts sync_opts = placer_opts;
-        sync_opts.scout_limit = 0;
-        Placer sync_placer(net_list, {}, sync_opts, analysis_opts, noc_opts, pb_gpin_lookup, netlist_pin_lookup,
-                            flat_placement_info, place_delay_model, placer_opts.place_auto_init_t_scale,
-                            mutable_placement.cube_bb, is_flat, /*quiet=*/true);
-        
-        read_place("auto_net", final_tmp_file.c_str(), sync_placer.mutable_state().mutable_blk_loc_registry(), /*verify_hashes=*/false, g_vpr_ctx.device().grid);
-        sync_placer.update_global_state();
-
-        // Cleanup temp files
-        for (int i=1; i<=16; ++i) {
-             // We don't bother individual names, just try cleanup best or all?
+        // Cleanup
+        for (int i = 0; i < 64; ++i) {
+            std::string tmp = vtr::string_fmt("auto_worker_%d.place", i);
+            std::remove(tmp.c_str());
         }
-        system("rm -f autonomous_temp_*.place");
+        munmap(shm_results, shm_size);
+        
+        VTR_LOG(">>> AUTONOMOUS SEARCH COMPLETE <<<\n\n");
+        return;
     } else {
         Placer placer(net_list, {}, placer_opts, analysis_opts, noc_opts, pb_gpin_lookup, netlist_pin_lookup,
                       flat_placement_info, place_delay_model, placer_opts.place_auto_init_t_scale,

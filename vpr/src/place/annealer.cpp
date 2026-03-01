@@ -110,6 +110,7 @@ t_annealing_state::t_annealing_state(float first_t,
     num_temps = 0;
     alpha = 1.f;
     t = first_t;
+    t_init = (first_t > 0) ? first_t : 1.0f; // [AUTONOMOUS] Record initial temperature
     rlim = first_rlim;
     move_lim_max = first_move_lim;
     crit_exponent = first_crit_exponent;
@@ -861,6 +862,14 @@ void PlacementAnnealer::outer_loop_update_timing_info() {
                 initial_timing_cost_ = costs_.timing_cost;
             }
 
+            // [REPRODUCTION] Track Global Best Placement (by Deterministic CPD)
+            float current_cpd = timing_info_->least_slack_critical_path().delay();
+            if (!best_placement_.cp_is_valid() || current_cpd < best_placement_.get_cp_cpd()) {
+                VTR_LOG("    [BEST] New global best CPD: %.4f ns (Prev: %.4f ns). Saving...\n", 
+                        current_cpd * 1e9, best_placement_.get_cp_cpd() * 1e9);
+                best_placement_.save_placement(placer_state_.block_locs(), costs_, current_cpd);
+            }
+
             outer_crit_iter_count_ = 0;
         }
         outer_crit_iter_count_++;
@@ -1089,6 +1098,14 @@ bool PlacementAnnealer::outer_loop_update_state() {
     }
 
     bool continue_anneal = annealing_state_.outer_loop_update(placer_stats_.success_rate, congestion_modeling_started_, costs_, placer_opts_);
+    
+    // [AUTONOMOUS] Dynamic λ scaling. λ fades as temperature T decreases.
+    // Scale λ linearly with T/T_init, clamped to [0, 1].
+    if (annealing_state_.t > annealing_state_.t_init) {
+        annealing_state_.t_init = annealing_state_.t;
+    }
+    placer_state_.mutable_runtime().lambda_scale = std::max(0.05f, std::min(1.0f, annealing_state_.t / std::max(1e-12f, annealing_state_.t_init)));
+
     if (!continue_anneal && placer_opts_.autonomous_is_scout && placer_opts_.shm_results_ptr) {
         t_tournament_result* shm_results = (t_tournament_result*)placer_opts_.shm_results_ptr;
         shm_results[placer_opts_.autonomous_worker_id].success = true;
@@ -1192,4 +1209,31 @@ e_move_result PlacementAnnealer::assess_swap_(double delta_c, double t) {
     }
     VTR_LOGV_DEBUG(g_vpr_ctx.placement().f_placer_debug, "\t\tMove is rejected(hill climbing)\n");
     return e_move_result::REJECTED;
+}
+
+void PlacementAnnealer::restore_best_if_better() {
+    // If a mid-run placement was better (in Deterministic CPD) than the final result, restore it
+    float final_cpd = timing_info_->least_slack_critical_path().delay();
+    if (best_placement_.cp_is_valid() && best_placement_.get_cp_cpd() < final_cpd) {
+        VTR_LOG("    [BEST] Restoring best placement from mid-run (CPD=%.4f ns) over final result (CPD=%.4f ns).\n",
+                best_placement_.get_cp_cpd() * 1e9, final_cpd * 1e9);
+        
+        auto& blk_loc_registry = placer_state_.mutable_blk_loc_registry();
+        
+        // Restore coordinates and grid block mapping
+        costs_ = best_placement_.restore_placement(placer_state_.mutable_block_locs(), blk_loc_registry.mutable_grid_blocks());
+
+        // Synchronize external connections
+        for (const auto& blk_id : g_vpr_ctx.clustering().clb_nlist.blocks()) {
+            blk_loc_registry.place_sync_external_block_connections(blk_id);
+        }
+
+        // Final timing sync
+        PlaceCritParams crit_params; // Dummy params for final update
+        crit_params.current_temp = 0.0;
+        crit_params.net_cost_handler = &net_cost_handler_;
+        
+        perform_full_timing_update(placer_opts_, crit_params, delay_model_, criticalities_, setup_slacks_, 
+                                    pin_timing_invalidator_, timing_info_, &costs_, placer_state_);
+    }
 }

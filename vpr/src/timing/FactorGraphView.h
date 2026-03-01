@@ -14,6 +14,28 @@ namespace tatum {
 }
 
 /**
+ * @brief A defensive wrapper for std::vector that ensures bounds-checked access.
+ */
+template <typename T>
+struct SafeVector : public std::vector<T> {
+    using std::vector<T>::vector;
+    T& operator[](size_t n) {
+        if (n >= this->size()) {
+            static T dummy{};
+            return dummy;
+        }
+        return std::vector<T>::operator[](n);
+    }
+    const T& operator[](size_t n) const {
+        if (n >= this->size()) {
+            static const T dummy{};
+            return dummy;
+        }
+        return std::vector<T>::operator[](n);
+    }
+};
+
+/**
  * @brief A static view of the VPR Timing Graph, organized for factor-graph-style analysis.
  * 
  * Variable Mapping:
@@ -106,10 +128,10 @@ struct FactorGraphView {
     std::vector<bool> is_interconnect_edge; 
 
     // Persistent Moment Buffers (Pre-allocated to avoid runtime allocation)
-    std::vector<GaussianMoments> mu_var_A; // Arrival [node]
-    std::vector<GaussianMoments> mu_var_R; // Required [node]
-    std::vector<GaussianMoments> mu_var_B; // Candidate Arrival [edge]
-    std::vector<GaussianMoments> mu_var_S; // Slack [endpoint_node]
+    SafeVector<GaussianMoments> mu_var_A; // Arrival [node]
+    SafeVector<GaussianMoments> mu_var_R; // Required [node]
+    SafeVector<GaussianMoments> mu_var_B; // Candidate Arrival [edge]
+    SafeVector<GaussianMoments> mu_var_S; // Slack [endpoint_node]
 
 
 
@@ -129,7 +151,7 @@ struct PhysicalState {
     // Edge-Specific Physical Scaling Factors
     // S_e = 1.0 + beta * distance(u,v)
     // Indexed by EdgeId (sparse, mostly for interconnect)
-    std::vector<float> edge_phys_scales; 
+    SafeVector<float> edge_phys_scales; 
 };
 
 /**

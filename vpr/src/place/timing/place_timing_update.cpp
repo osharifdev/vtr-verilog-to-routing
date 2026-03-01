@@ -212,19 +212,20 @@ void perform_full_timing_update(const t_placer_opts& placer_opts,
                                 SetupTimingInfo* timing_info,
                                 t_placer_costs* costs,
                                 PlacerState& placer_state) {
-    /* FactorGraphView: Build exactly once per run */
-    static FactorGraphView fg;
-
-    static bool fg_built = false;
-    if (!fg_built) {
-        const auto& timing_ctx = g_vpr_ctx.timing();
-        if (timing_ctx.graph) {
-            fg = build_factor_graph_view(*timing_ctx.graph);
-            fg_built = true;
+    /* Ensure FactorGraphView is built and synchronized with current timing graph */
+    if (timing_info) {
+        const auto& tg = *timing_info->timing_graph();
+        if (!g_fg_view || g_fg_view->num_nodes != tg.nodes().size()) {
+            if (g_fg_view) {
+                VTR_LOG("INSTRUMENTATION: Final Audit Timing Graph mismatch (%zu vs %zu). Rebuilding...\n", 
+                        g_fg_view->num_nodes, tg.nodes().size());
+            }
+            g_fg_view = std::make_unique<FactorGraphView>(build_factor_graph_view(tg));
         }
     }
+    FactorGraphView& fg = *g_fg_view;
 
-    if (fg_built && timing_info) {
+    if (timing_info) {
         const auto& tg = *timing_info->timing_graph();
         const auto& analyzer = *timing_info->setup_analyzer();
         const auto& delay_calc = *timing_info->delay_calculator();
@@ -428,7 +429,11 @@ void perform_full_timing_update(const t_placer_opts& placer_opts,
                 if (s <= min_slack + 1e-15) num_eps15++;
             }
 
-            if (!g_fg_view) {
+            if (!g_fg_view || g_fg_view->num_nodes != tg.nodes().size()) {
+                if (g_fg_view) {
+                    VTR_LOG("INSTRUMENTATION: Timing Graph size mismatch (%zu vs %zu). Rebuilding FactorGraphView...\n", 
+                            g_fg_view->num_nodes, tg.nodes().size());
+                }
                 g_fg_view = std::make_unique<FactorGraphView>(build_factor_graph_view(tg));
             }
 
@@ -443,13 +448,14 @@ void perform_full_timing_update(const t_placer_opts& placer_opts,
             config.momentum_boost = crit_params.prob_momentum_boost;
             config.min_slack = min_slack; // [PHASE 7.1] Relative Slack
 
-            float lambda = placer_opts.prob_inject_lambda;
+            // [AUTONOMOUS] apply dynamic scale to lambda noise
+            float lambda = placer_opts.prob_inject_lambda * placer_state.runtime().lambda_scale;
 
             // [PHASE 7] Autonomous Overrides
             if (crit_params.prob_self_calibrate) {
                 auto topo = resolve_topological_config(*g_fg_view);
-                config.alpha = topo.alpha;
-                lambda = topo.lambda; // Base lambda before ramp
+                if (config.alpha <= 0.0f) config.alpha = topo.alpha;
+                if (lambda <= 0.0f) lambda = topo.lambda; // Base lambda before ramp
             }
 
             // [PHASE 7] Dynamic Schedule Ramp
@@ -485,8 +491,10 @@ void perform_full_timing_update(const t_placer_opts& placer_opts,
                     summary.moments.num_max_calls_total, summary.moments.num_max_calls_sigma_both_zero);
 
             if (!same_ep) {
+                size_t d_node = (det_worst_node != tatum::NodeId::INVALID()) ? (size_t)det_worst_node : 0;
+                size_t p_node = (prob_worst_node != tatum::NodeId::INVALID()) ? (size_t)prob_worst_node : 0;
                 VTR_LOG("PROB_STEP2_MISMATCH: update_id=%zu det_worst_ep=%zu (slack=%.15g) prob_worst_ep=%zu (slack95=%.15g) num_eps12=%d num_eps15=%d\n",
-                        g_num_timing_updates_seen, (size_t)det_worst_node, (double)min_slack, (size_t)prob_worst_node, (double)prob_WNS_s, num_eps12, num_eps15);
+                        g_num_timing_updates_seen, d_node, (double)min_slack, p_node, (double)prob_WNS_s, num_eps12, num_eps15);
             }
 
             g_step2_max_abs_err_wns = std::max(g_step2_max_abs_err_wns, abs_err);
@@ -512,7 +520,8 @@ void perform_full_timing_update(const t_placer_opts& placer_opts,
             double risk_s = (placer_opts.prob_inject_clamp) ? std::max(0.0, -prob_WNS_s) : -prob_WNS_s;
             double timing_cost_new = timing_cost_before;
             double delta = 0.0;
-            double lambda = (double)placer_opts.prob_inject_lambda;
+            // [AUTONOMOUS] apply dynamic scale to lambda noise
+            double lambda = (double)(placer_opts.prob_inject_lambda * placer_state.runtime().lambda_scale);
 
             if (mode == "replace") {
                 timing_cost_new = risk_s;
@@ -559,13 +568,17 @@ void perform_full_timing_update(const t_placer_opts& placer_opts,
 
                                 tatum::NodeId node_id = atom_ctx.lookup().atom_pin_tnode(atom_pin);
                                 if (node_id) {
-                                    auto moments = g_fg_view->mu_var_S[size_t(node_id)];
-                                    if (moments.is_set()) {
-                                        double p_mu = (double)moments.mu;
-                                        double p_std = std::sqrt(std::max(0.0, (double)moments.var));
-                                        double p_slack95 = p_mu - 1.64485 * p_std;
-                                        float current_prob_crit = 1.0f - (float)(p_slack95 / (double)max_required);
-                                        prob_crit = std::max(prob_crit, current_prob_crit);
+                                    size_t n_idx = size_t(node_id);
+                                    VTR_ASSERT_SAFE_MSG(n_idx < g_fg_view->mu_var_S.size(), "NodeId drift detected in mu_var_S access!");
+                                    if (n_idx < g_fg_view->mu_var_S.size()) {
+                                        auto moments = g_fg_view->mu_var_S[n_idx];
+                                        if (moments.is_set()) {
+                                            double p_mu = (double)moments.mu;
+                                            double p_std = std::sqrt(std::max(0.0, (double)moments.var));
+                                            double p_slack95 = p_mu - 1.64485 * p_std;
+                                            float current_prob_crit = 1.0f - (float)(p_slack95 / (double)max_required);
+                                            prob_crit = std::max(prob_crit, current_prob_crit);
+                                        }
                                     }
                                 }
                             }
@@ -1034,7 +1047,10 @@ double comp_td_connection_cost(const PlaceDelayModel* delay_model,
             for (auto atom_pin : place_crit.pin_lookup().connected_atom_pins(sink_pin)) {
                 tatum::NodeId node_id = atom_ctx.lookup().atom_pin_tnode(atom_pin);
                 if (node_id) {
-                    max_depth = std::max(max_depth, g_fg_view->node_levels[size_t(node_id)]);
+                    size_t n_idx = size_t(node_id);
+                    if (n_idx < g_fg_view->node_levels.size()) {
+                        max_depth = std::max(max_depth, g_fg_view->node_levels[n_idx]);
+                    }
                 }
             }
             lambda_eff *= std::log2(std::max(0.0f, (float)max_depth - 3.0f) + 1.0f);
@@ -1045,7 +1061,9 @@ double comp_td_connection_cost(const PlaceDelayModel* delay_model,
         // [NEW] Topology Dampening & Linearized Criticality
         float crit_diff = 0.0f;
         if (!g_prob_differential_crit.empty()) {
-            crit_diff = g_prob_differential_crit[net][ipin];
+            if (size_t(net) < g_prob_differential_crit.size() && size_t(ipin) < g_prob_differential_crit[net].size()) {
+                crit_diff = g_prob_differential_crit[net][ipin];
+            }
         }
 
         double scaler = 1.0 + (double)lambda_eff * std::sqrt(crit_diff) * g_cached_risk_norm * geom_scaler;

@@ -384,6 +384,9 @@ void Placer::place() {
     crit_params.net_cost_handler = &net_cost_handler_;
     crit_params.current_temp = annealing_state.t;
 
+    // [REPRODUCTION] Recover best placement found during any point of the anneal
+    annealer_->restore_best_if_better();
+
     if (placer_opts_.place_algorithm.is_timing_driven()) {
         perform_full_timing_update(placer_opts_,
                                    crit_params,

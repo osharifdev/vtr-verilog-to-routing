@@ -109,6 +109,7 @@ struct PlacerRuntimeContext : public Context {
     float f_update_td_costs_nets_elapsed_sec;
     float f_update_td_costs_sum_nets_elapsed_sec;
     float f_update_td_costs_total_elapsed_sec;
+    float lambda_scale = 1.0f; // [AUTONOMOUS] Dynamic scaling for prob_inject_lambda
 };
 
 /**

@@ -161,8 +161,10 @@ void update_physical_state(const FactorGraphView& fg,
             }
         }
 
-        phys_state.edge_phys_scales[e_idx] = scale;
-        edges_updated++;
+        if (e_idx < phys_state.edge_phys_scales.size()) {
+            phys_state.edge_phys_scales[e_idx] = scale;
+            edges_updated++;
+        }
     }
     
     VTR_LOG("INSTRUMENTATION: Physical State Updated. Edges Scaled: %zu\n", edges_updated);
@@ -317,6 +319,7 @@ ProbTimingSummary run_probabilistic_timing(FactorGraphView& fg,
 
     // 1. Forward Pass (Arrival)
     for (auto node_id : fg.topo_nodes) {
+        if (size_t(node_id) >= fg.in_edges.size()) continue;
         size_t n_idx = size_t(node_id);
         GaussianMoments current_A = GaussianMoments::unset();
         
@@ -329,6 +332,7 @@ ProbTimingSummary run_probabilistic_timing(FactorGraphView& fg,
         for (auto edge_id : fg.in_edges[n_idx]) {
             size_t e_idx = size_t(edge_id);
             tatum::NodeId src = fg.edge_src[e_idx];
+            if (size_t(src) >= fg.mu_var_A.size()) continue;
             GaussianMoments src_A = fg.mu_var_A[size_t(src)];
             
             auto edge_type = tg.edge_type(edge_id);
@@ -349,7 +353,9 @@ ProbTimingSummary run_probabilistic_timing(FactorGraphView& fg,
                 }
 
                 GaussianMoments candidate_B = {src_A.mu + mu_D, src_A.var + var_D};
-                fg.mu_var_B[e_idx] = candidate_B;
+                if (e_idx < fg.mu_var_B.size()) {
+                    fg.mu_var_B[e_idx] = candidate_B;
+                }
 
                 current_A = max_gaussian_moments(current_A, candidate_B);
             }
@@ -372,6 +378,7 @@ ProbTimingSummary run_probabilistic_timing(FactorGraphView& fg,
     // 2. Backward Pass (Required)
     for (size_t i = fg.topo_nodes.size(); i > 0; --i) {
         tatum::NodeId node_id = fg.topo_nodes[i-1];
+        if (size_t(node_id) >= fg.out_edges.size()) continue;
         size_t n_idx = size_t(node_id);
         GaussianMoments current_R = GaussianMoments::unset();
 
@@ -384,6 +391,7 @@ ProbTimingSummary run_probabilistic_timing(FactorGraphView& fg,
         for (auto edge_id : fg.out_edges[n_idx]) {
             size_t e_idx = size_t(edge_id);
             tatum::NodeId dst = fg.edge_dst[e_idx];
+            if (size_t(dst) >= fg.mu_var_R.size()) continue;
             GaussianMoments dst_R = fg.mu_var_R[size_t(dst)];
 
             auto edge_type = tg.edge_type(edge_id);
@@ -429,14 +437,16 @@ ProbTimingSummary run_probabilistic_timing(FactorGraphView& fg,
     for (auto node_id : tg.nodes()) {
         size_t n_idx = size_t(node_id);
         auto t_slacks = analyzer.setup_slacks(node_id);
-        if (!t_slacks.empty()) {
+        if (!t_slacks.empty() && n_idx < fg.mu_var_A.size() && n_idx < fg.mu_var_R.size()) {
             GaussianMoments A = fg.mu_var_A[n_idx];
             GaussianMoments R = fg.mu_var_R[n_idx];
             if (A.is_set() && R.is_set()) {
                 double mu_S = R.mu - A.mu;
                 double var_S = R.var + A.var;
                 double S95 = mu_S - 1.64485 * std::sqrt(std::max(0.0, var_S));
-                fg.mu_var_S[n_idx] = {mu_S, var_S};
+                if (n_idx < fg.mu_var_S.size()) {
+                    fg.mu_var_S[n_idx] = {mu_S, var_S};
+                }
                 
                 if (S95 < worst_S95) {
                     worst_S95 = S95;

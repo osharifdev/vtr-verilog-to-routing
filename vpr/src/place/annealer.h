@@ -3,6 +3,7 @@
 #include "vpr_types.h"
 
 #include "move_generator.h" // movestats
+#include "place_checkpoint.h"
 #include "net_cost_handler.h"
 #include "manual_move_generator.h"
 #include "vtr_random.h"
@@ -75,6 +76,7 @@ struct t_swap_stats {
 class t_annealing_state {
   public:
     float t;
+    float t_init; // [AUTONOMOUS] Record initial temperature for lambda scaling
     float alpha;
     int num_temps;
 
@@ -234,6 +236,12 @@ class PlacementAnnealer {
 
     /// @brief Returns constant references to different statistics objects
     std::tuple<const t_swap_stats&, const MoveTypeStat&, const t_placer_statistics&> get_stats() const;
+    
+    /// @brief Returns the best placement found so far
+    const t_placement_checkpoint& get_best_placement() const { return best_placement_; }
+    
+    /// @brief Restores the best placement found so far if it's better than the current one
+    void restore_best_if_better();
 
     /**
      * @brief Returns MoveAbortionLogger to report how many moves
@@ -348,6 +356,9 @@ class PlacementAnnealer {
     bool quench_started_;
     /// Indicates whether routing congestion modeling has been started
     bool congestion_modeling_started_;
+    
+    /// Stores the best placement found so far (based on timing cost)
+    t_placement_checkpoint best_placement_;
 
     double initial_timing_cost_ = 0.0;
 

@@ -55,6 +55,9 @@ class t_placement_checkpoint {
 
     //return true if the checkpoint is valid
     bool cp_is_valid() const;
+
+    //return the costs of the saved checkpoint
+    const t_placer_costs& get_costs() const { return costs_; }
 };
 
 //save placement checkpoint if checkpointing is enabled and checkpoint conditions occurred
