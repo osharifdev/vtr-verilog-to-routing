@@ -2416,6 +2416,16 @@ argparse::ArgumentParser create_arg_parser(const std::string& prog_name, t_optio
         .help("Lambda parameter for probabilistic timing injection")
         .default_value("0.15");
 
+    place_grp.add_argument(args.prob_inject_quantile, "--prob_inject_quantile")
+        .help("Quantile for slack pressure (e.g. 0.05 for 95th percentile)");
+
+    place_grp.add_argument(args.prob_inject_quantile_start, "--prob_inject_quantile_start")
+        .help("Starting quantile for phase-aware scheduling");
+
+    place_grp.add_argument(args.prob_inject_quantile_end, "--prob_inject_quantile_end")
+        .help("Ending quantile for phase-aware scheduling")
+        .default_value("0.0");
+
     place_grp.add_argument<std::string>(args.prob_inject_scale_mode, "--prob_inject_scale_mode")
         .help("Scaling mode for injection (none, max_clamped, etc.)")
         .default_value("none")

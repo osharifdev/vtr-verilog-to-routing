@@ -97,6 +97,9 @@ struct t_options {
     argparse::ArgValue<float> prob_timing_beta;
     argparse::ArgValue<bool> prob_inject_clamp;
     argparse::ArgValue<float> prob_inject_lambda;
+    argparse::ArgValue<float> prob_inject_quantile;
+    argparse::ArgValue<float> prob_inject_quantile_start;
+    argparse::ArgValue<float> prob_inject_quantile_end;
     argparse::ArgValue<std::string> prob_inject_scale_mode;
     argparse::ArgValue<e_prob_dist_func> prob_dist_func;
     argparse::ArgValue<float> prob_dist_threshold;

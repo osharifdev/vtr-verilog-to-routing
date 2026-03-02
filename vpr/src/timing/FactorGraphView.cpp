@@ -170,6 +170,27 @@ void update_physical_state(const FactorGraphView& fg,
     VTR_LOG("INSTRUMENTATION: Physical State Updated. Edges Scaled: %zu\n", edges_updated);
 }
 
+double FactorGraphView::get_quantile_slack95(float q) const {
+    std::vector<double> s95_values;
+    s95_values.reserve(topo_nodes.size());
+
+    for (size_t n_idx = 0; n_idx < mu_var_S.size(); ++n_idx) {
+        GaussianMoments S = mu_var_S[n_idx];
+        if (S.is_set()) {
+            double p_mu = S.mu;
+            double p_std = std::sqrt(std::max(0.0, S.var));
+            double p_slack95 = p_mu - 1.64485 * p_std;
+            s95_values.push_back(p_slack95);
+        }
+    }
+
+    if (s95_values.empty()) return 1e20;
+
+    std::sort(s95_values.begin(), s95_values.end());
+    size_t idx = (size_t)((float)(s95_values.size() - 1) * q);
+    return s95_values[idx];
+}
+
 // Removed Mode 3 max_gaussian_mode3
 
 

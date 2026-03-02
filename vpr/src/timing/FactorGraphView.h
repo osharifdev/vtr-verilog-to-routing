@@ -142,6 +142,12 @@ struct FactorGraphView {
     std::map<int, size_t> fanin_histogram;
 
     /**
+     * @brief Computes a quantile value of the Slack95 distribution across all endpoints.
+     * @param q Quantile (0.0 to 1.0, e.g. 0.05 for worst 5%)
+     */
+    double get_quantile_slack95(float q) const;
+
+    /**
      * @brief Computes a hash of the topology to prove invariance.
      */
     size_t get_structural_hash() const;

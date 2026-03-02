@@ -508,7 +508,7 @@ void perform_full_timing_update(const t_placer_opts& placer_opts,
         }
 
         // 3. Phase 15 Step 3: Replace/Regularize Injection
-        if (inject_enabled && (mode == "replace" || mode == "regularize")) {
+        if (inject_enabled && (mode == "replace" || mode == "regularize" || mode == "quantile")) {
             if (g_num_injection_updates_seen == 0) {
                 VTR_LOG("PROB_STEP3_INJECT_CONFIG: benchmark=%s seed=%d alpha=%g beta=%g inject=on mode=%s lambda=%g clamp=%s\n",
                         g_vpr_ctx.atom().netlist().netlist_name().c_str(), 1, config.alpha, config.beta,
@@ -518,6 +518,37 @@ void perform_full_timing_update(const t_placer_opts& placer_opts,
             g_num_injection_updates_seen++;
 
             double risk_s = (placer_opts.prob_inject_clamp) ? std::max(0.0, -prob_WNS_s) : -prob_WNS_s;
+            
+            // [NEW] Quantile-Based Pressure (Idea A + PQT)
+            if (mode == "quantile" || (mode == "regularize" && placer_opts.prob_inject_quantile > 0.0001f)) {
+                float q = (placer_opts.prob_inject_quantile > 0.0001f) ? placer_opts.prob_inject_quantile : 0.05f;
+                
+                // [PHASE 8] Phase-Aware Quantile Targeting (PQT)
+                if (placer_opts.prob_inject_quantile_start > 0.0001f && placer_opts.prob_inject_quantile_end > 0.0001f) {
+                    float q_start = placer_opts.prob_inject_quantile_start;
+                    float q_end = placer_opts.prob_inject_quantile_end;
+                    float t_curr = crit_params.current_temp;
+                    
+                    if (t_curr > 100.0f) {
+                        q = q_start;
+                    } else if (t_curr < 1e-6f) {
+                        q = q_end;
+                    } else {
+                        // Logarithmic interpolation for temperature-aware scheduling (more robust)
+                        const float log_high = std::log(100.0f);
+                        const float log_low = std::log(1e-6f);
+                        float progress = (log_high - std::log(t_curr)) / (log_high - log_low);
+                        progress = std::max(0.0f, std::min(1.0f, progress));
+                        q = q_start + progress * (q_end - q_start);
+                    }
+                }
+
+                double q_s95 = g_fg_view->get_quantile_slack95(q);
+                risk_s = (placer_opts.prob_inject_clamp) ? std::max(0.0, -q_s95) : -q_s95;
+                VTR_LOG("PROB_STEP3_QUANTILE: update_id=%zu q=%.4f (T=%.4f) worst_S95=%.6e q_S95=%.6e risk_s=%.6e\n",
+                        g_num_timing_updates_seen, (double)q, (double)crit_params.current_temp, prob_WNS_s, q_s95, risk_s);
+            }
+
             double timing_cost_new = timing_cost_before;
             double delta = 0.0;
             // [AUTONOMOUS] apply dynamic scale to lambda noise
@@ -525,7 +556,7 @@ void perform_full_timing_update(const t_placer_opts& placer_opts,
 
             if (mode == "replace") {
                 timing_cost_new = risk_s;
-            } else if (mode == "regularize") {
+            } else if (mode == "regularize" || mode == "quantile") {
                 double ref_s = std::max(1e-15, -(double)det_WNS_s);
                 double risk_norm = std::min(5.0, risk_s / ref_s);
                 float det_cpd_ns = (float)det_CPD_s * 1e9f;

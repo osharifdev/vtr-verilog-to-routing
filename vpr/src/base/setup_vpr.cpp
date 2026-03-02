@@ -746,6 +746,8 @@ static void setup_placer_opts(const t_options& Options, t_placer_opts* PlacerOpt
     PlacerOpts->prob_self_calibrate = Options.prob_self_calibrate.value();
     PlacerOpts->prob_congestion_gamma = Options.prob_congestion_gamma.value();
     PlacerOpts->prob_schedule_ramp = Options.prob_schedule_ramp.value();
+    PlacerOpts->prob_inject_quantile_start = Options.prob_inject_quantile_start.value();
+    PlacerOpts->prob_inject_quantile_end = Options.prob_inject_quantile_end.value();
     
     // [PHASE 7.1] Stability v2: Adaptive Feedback
     PlacerOpts->prob_slack_gate = Options.prob_slack_gate.value();

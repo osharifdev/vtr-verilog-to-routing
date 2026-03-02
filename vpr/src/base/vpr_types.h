@@ -1097,6 +1097,9 @@ struct t_placer_opts {
 
     std::string move_stats_file;
 
+    float prob_inject_quantile;
+    float prob_inject_quantile_start;
+    float prob_inject_quantile_end;
     int placement_saves_per_temperature;
     
     // [PHASE 18] Recursive Scouting Metadata
