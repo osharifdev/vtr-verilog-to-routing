@@ -94,7 +94,11 @@ void try_place(const Netlist<>& net_list,
     // So, it is created and initialized once. */
     std::shared_ptr<PlaceDelayModel> place_delay_model;
 
-    if (placer_opts.place_algorithm.is_timing_driven()) {
+    // PROXY 1.2+: Skip delta delay model when proxy level >= 2 and stop_after >= 0
+    bool proxy_skip_delay_model = (placer_opts.proxy_checkpoint_enable
+                                    && placer_opts.proxy_checkpoint_level >= 2
+                                    && placer_opts.proxy_checkpoint_stop_after >= 0);
+    if (placer_opts.place_algorithm.is_timing_driven() && !proxy_skip_delay_model) {
         /*do this before the initial placement to avoid messing up the initial placement */
         place_delay_model = PlacementDelayModelCreator::create_delay_model(placer_opts,
                                                                            router_opts,
@@ -109,6 +113,9 @@ void try_place(const Netlist<>& net_list,
         if (isEchoFileEnabled(E_ECHO_PLACEMENT_DELTA_DELAY_MODEL)) {
             place_delay_model->dump_echo(getEchoFileName(E_ECHO_PLACEMENT_DELTA_DELAY_MODEL));
         }
+    } else if (proxy_skip_delay_model) {
+        VTR_LOG("PROXY 1.2: Skipping delta delay model computation (level=%d)\n",
+                placer_opts.proxy_checkpoint_level);
     }
 
     // Make the global instance of BlkLocRegistry inaccessible through the getter methods of the

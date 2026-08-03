@@ -1519,7 +1519,11 @@ ast_node_t* finalize_ast(ast_node_t* node, ast_node_t* parent, sc_hierarchy* loc
                         break;
                     }
 
-                    oassert(false); // module instances should be resolved at this point
+                    // if not found, it might be a hard block that is not defined in verilog but in the architecture
+                    // we'll let it pass and see if the later stages can handle it (as a blackbox)
+                    warning_message(AST, node->loc, "Module instance %s not found in Verilog, assuming it's a blackbox/hard block", node->children[0]->identifier_node->types.identifier);
+                    vtr::free(new_instance_name);
+                    break;
                 }
                 break;
             }

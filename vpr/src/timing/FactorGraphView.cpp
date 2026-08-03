@@ -89,15 +89,19 @@ void update_physical_state(const FactorGraphView& fg,
                       const ProbTimingConfig& config,
                       const vtr::vector_map<ClusterBlockId, t_block_loc>& block_locs,
                       const NetCostHandler* net_cost_handler) {
-    if (config.mode != UncertaintyMode::PHYSICAL_COMBINED && config.beta <= 1e-9 && config.gamma <= 1e-9) {
+    if (config.mode != UncertaintyMode::PHYSICAL_COMBINED && config.beta <= 1e-9 && config.gamma <= 1e-9 && config.gamma_b <= 1e-9) {
         return;
     }
 
     auto& atom_ctx = g_vpr_ctx.atom();
-    
+
     // Resize if needed (sparse mapping)
     if (phys_state.edge_phys_scales.size() != fg.edge_src.size()) {
         phys_state.edge_phys_scales.assign(fg.edge_src.size(), 1.0f);
+    }
+    // [Option B] Resize routing penalty vector
+    if (phys_state.edge_routing_penalty.size() != fg.edge_src.size()) {
+        phys_state.edge_routing_penalty.assign(fg.edge_src.size(), 0.0f);
     }
     
     if (block_locs.empty()) return;
@@ -139,6 +143,32 @@ void update_physical_state(const FactorGraphView& fg,
         // 3. Physical Factor: Base Distance Scaling
         float scale = 1.0f + config.beta * (float)dist;
 
+        // 3b. Fanout-Aware Variance Scaling
+        if (config.beta2 > 1e-9f) {
+            AtomNetId src_net = atom_ctx.netlist().pin_net(src_pin);
+            if (src_net) {
+                size_t fanout = atom_ctx.netlist().net_sinks(src_net).size();
+                if (fanout > 1) {
+                    scale *= (1.0f + config.beta2 * std::log((float)fanout));
+                }
+            }
+        }
+
+        // 3c. Channel Capacity Variance Scaling
+        // Low routing capacity at edge location = more uncertainty about routed delay
+        // x_list[y] = horizontal channel width at row y
+        // y_list[x] = vertical channel width at column x
+        if (config.beta3 > 1e-9f) {
+            const auto& cw = g_vpr_ctx.device().chan_width;
+            int mid_x = (src_loc.loc.x + dst_loc.loc.x) / 2;
+            int mid_y = (src_loc.loc.y + dst_loc.loc.y) / 2;
+
+            int cap_x = (mid_y >= 0 && mid_y < (int)cw.x_list.size()) ? cw.x_list[mid_y] : cw.x_max;
+            int cap_y = (mid_x >= 0 && mid_x < (int)cw.y_list.size()) ? cw.y_list[mid_x] : cw.y_max;
+            float avg_cap = (float)std::max(cap_x + cap_y, 2) / 2.0f;
+            scale *= (1.0f + config.beta3 / avg_cap);
+        }
+
         // 4. [PHASE 7] Congestion-Aware Inflation
         if (chan_util && config.gamma > 0.0f && !(*chan_util).x.empty() && !(*chan_util).y.empty()) {
             auto src_l = src_loc.loc.layer;
@@ -158,6 +188,12 @@ void update_physical_state(const FactorGraphView& fg,
                 
                 float avg_cong = (float)(c_src_x + c_src_y + c_dst_x + c_dst_y) / 4.0f;
                 scale *= (1.0f + config.gamma * avg_cong);
+
+                // [Option B] Routing penalty: shift mean delay upward in congested areas
+                if (config.gamma_b > 1e-9f && e_idx < phys_state.edge_routing_penalty.size()) {
+                    phys_state.edge_routing_penalty[e_idx] = config.gamma_b * avg_cong;
+                }
+
             }
         }
 
@@ -364,13 +400,23 @@ ProbTimingSummary run_probabilistic_timing(FactorGraphView& fg,
                 
                 double mu_D = delay_calc.max_edge_delay(tg, edge_id).value();
                 double var_D = std::pow(config.alpha * mu_D, 2.0);
-                
-                if (config.mode == UncertaintyMode::PHYSICAL_COMBINED && 
-                    !phys_state.edge_phys_scales.empty() && 
+
+                if (config.mode == UncertaintyMode::PHYSICAL_COMBINED &&
+                    !phys_state.edge_phys_scales.empty() &&
                     e_idx < phys_state.edge_phys_scales.size()) {
-                    
+
                     float scale = phys_state.edge_phys_scales[e_idx];
                     var_D *= scale; // Scale variance by physical factor
+                }
+
+                // [Option B] Apply routing penalty to mean delay
+                // Congested edges are expected to have higher routed delay
+                if (!phys_state.edge_routing_penalty.empty() &&
+                    e_idx < phys_state.edge_routing_penalty.size()) {
+                    float penalty = phys_state.edge_routing_penalty[e_idx];
+                    if (penalty > 1e-9f) {
+                        mu_D *= (1.0 + (double)penalty); // Shift mean upward
+                    }
                 }
 
                 GaussianMoments candidate_B = {src_A.mu + mu_D, src_A.var + var_D};

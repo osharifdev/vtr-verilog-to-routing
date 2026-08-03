@@ -106,7 +106,23 @@ struct t_options {
     argparse::ArgValue<float> prob_huber_delta;
     argparse::ArgValue<bool> prob_self_calibrate;
     argparse::ArgValue<float> prob_congestion_gamma;
+    argparse::ArgValue<float> prob_routing_penalty_gamma;  // [Option B] Routing penalty mean shift
+    argparse::ArgValue<float> prob_timing_beta2;           // Fanout-aware edge variance: σ² *= (1 + β₂ × log(fanout))
+    argparse::ArgValue<float> prob_timing_beta3;           // Aspect ratio edge variance
+    argparse::ArgValue<float> prob_uplift_congestion_gamma;
     argparse::ArgValue<bool> prob_schedule_ramp;
+    argparse::ArgValue<bool> v0_enable;
+    argparse::ArgValue<int> v0_macro_mode;
+    argparse::ArgValue<std::string> v0_ordering_mode;
+    argparse::ArgValue<bool> v0_debug;
+    argparse::ArgValue<int> prob_config_id;
+    argparse::ArgValue<std::string> v0_log;
+    argparse::ArgValue<std::string> sweep_csv;
+
+    argparse::ArgValue<bool> proxy_checkpoint_enable;
+    argparse::ArgValue<std::string> proxy_checkpoint_output;
+    argparse::ArgValue<int> proxy_checkpoint_stop_after;
+    argparse::ArgValue<int> proxy_checkpoint_level;
 
     argparse::ArgValue<bool> autonomous;
     argparse::ArgValue<bool> is_server_mode_enabled;

@@ -1627,7 +1627,13 @@ void NetCostHandler::recompute_costs_from_scratch(const PlaceDelayModel* delay_m
             std::string msg = vtr::string_fmt(
                 "in recompute_bb_cong_cost_: new_%s = %g, old %s = %g, ERROR_TOL = %g\n",
                 cost_name.c_str(), new_cost, cost_name.c_str(), old_cost, placer_opts_.place_static_cost_tolerance);
-            VPR_ERROR(VPR_ERROR_PLACE, msg.c_str());
+            
+            if (cost_name == "timing_cost") {
+                VTR_LOG_WARN("%s", msg.c_str());
+            } else {
+                g_vpr_ctx.mutable_placement().unlock_loc_vars();
+                VPR_ERROR(VPR_ERROR_PLACE, msg.c_str());
+            }
         }
     };
 

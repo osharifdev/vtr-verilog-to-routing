@@ -253,8 +253,10 @@ void convert_ast_to_netlist_recursing_via_modules(ast_node_t** current_module, c
             long sc_spot;
             /* lookup the name of the module associated with this instantiated point */
             if ((sc_spot = sc_lookup_string(module_names_to_idx, temp_instance_name)) == -1) {
-                error_message(NETLIST, (*current_module)->loc,
-                              "Can't find instance name %s\n", temp_instance_name);
+                warning_message(NETLIST, (*current_module)->loc,
+                              "Can't find instance name %s, skipping recursion (assuming blackbox)\n", temp_instance_name);
+                vtr::free(temp_instance_name);
+                continue;
             }
 
             ast_node_t* instance = (ast_node_t*)module_names_to_idx->data[sc_spot];
@@ -1719,8 +1721,10 @@ void connect_module_instantiation_and_alias(short PASS, ast_node_t* module_insta
 
     /* lookup the node of the module associated with this instantiated module */
     if ((sc_spot = sc_lookup_string(module_names_to_idx, module_instance_name)) == -1) {
-        error_message(NETLIST, module_instance->loc,
-                      "Can't find module %s\n", module_instance_name);
+        warning_message(NETLIST, module_instance->loc,
+                      "Can't find module %s, assuming it's a blackbox/hard block\n", module_instance_name);
+        vtr::free(module_instance_name);
+        return;
     }
 
     vtr::free(module_instance_name);

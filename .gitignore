@@ -161,3 +161,14 @@ cmake-build-release
 #
 compile_commands.json
 .clangd
+#
+# Research results and generated artifacts
+#
+#   Benchmark sweep outputs and paper result data are derived, large
+#   (multi-GB) and regenerable from the tracked code. Distribute them
+#   as a release asset or Zenodo record instead of committing them.
+#
+PAPER_RESULTS*/
+VTR_Benchmarks*/
+mapping_*/
+koios_*/

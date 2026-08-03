@@ -745,6 +745,10 @@ static void setup_placer_opts(const t_options& Options, t_placer_opts* PlacerOpt
     PlacerOpts->prob_huber_delta = Options.prob_huber_delta;
     PlacerOpts->prob_self_calibrate = Options.prob_self_calibrate.value();
     PlacerOpts->prob_congestion_gamma = Options.prob_congestion_gamma.value();
+    PlacerOpts->prob_routing_penalty_gamma = Options.prob_routing_penalty_gamma.value();
+    PlacerOpts->prob_timing_beta2 = Options.prob_timing_beta2.value();
+    PlacerOpts->prob_timing_beta3 = Options.prob_timing_beta3.value();
+    PlacerOpts->prob_uplift_congestion_gamma = Options.prob_uplift_congestion_gamma.value();
     PlacerOpts->prob_schedule_ramp = Options.prob_schedule_ramp.value();
     PlacerOpts->prob_inject_quantile_start = Options.prob_inject_quantile_start.value();
     PlacerOpts->prob_inject_quantile_end = Options.prob_inject_quantile_end.value();
@@ -761,6 +765,19 @@ static void setup_placer_opts(const t_options& Options, t_placer_opts* PlacerOpt
 
     PlacerOpts->place_auto_init_t_scale = Options.place_auto_init_t_scale.value();
     PlacerOpts->anneal_init_t_estimator = Options.place_init_t_estimator.value();
+
+    PlacerOpts->v0_enable = Options.v0_enable;
+    PlacerOpts->v0_macro_mode = Options.v0_macro_mode;
+    PlacerOpts->v0_ordering_mode = Options.v0_ordering_mode;
+    PlacerOpts->v0_debug = Options.v0_debug;
+    PlacerOpts->prob_config_id = Options.prob_config_id;
+    PlacerOpts->v0_log = Options.v0_log.value();
+    PlacerOpts->sweep_csv = Options.sweep_csv.value();
+
+    PlacerOpts->proxy_checkpoint_enable = Options.proxy_checkpoint_enable;
+    PlacerOpts->proxy_checkpoint_output = Options.proxy_checkpoint_output.value();
+    PlacerOpts->proxy_checkpoint_stop_after = Options.proxy_checkpoint_stop_after;
+    PlacerOpts->proxy_checkpoint_level = Options.proxy_checkpoint_level;
 }
 
 static void setup_analysis_opts(const t_options& Options, t_analysis_opts& analysis_opts) {

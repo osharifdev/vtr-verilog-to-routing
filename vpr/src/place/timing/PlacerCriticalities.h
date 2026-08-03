@@ -30,7 +30,9 @@ struct PlaceCritParams {
 
     // [PHASE 7] Autonomous Engine Extras
     bool prob_self_calibrate = false;
-    float prob_congestion_gamma = 0.0f;
+    float prob_congestion_gamma = 0.0f;        // Option A: factor graph edge variance inflation
+    float prob_routing_penalty_gamma = 0.0f;   // Option B: routing penalty mean shift
+    float prob_uplift_congestion_gamma = 0.0f;  // Option C: post-hoc uplift scaling
     bool prob_schedule_ramp = false;
 
     // [PHASE 6] Geometric Scaling

@@ -5,6 +5,7 @@
 
 #include "place_timing_update.h"
 
+#include <chrono>
 #include "NetPinTimingInvalidator.h"
 #include "PlacerCriticalities.h"
 #include "PlacerSetupSlacks.h"
@@ -26,6 +27,7 @@
 #include <memory>
 #include <algorithm>
 #include "vtr_hash.h"
+#include "net_cost_handler.h"
 
 struct ProbInjectStep1Event {
     size_t update_id;
@@ -44,6 +46,8 @@ static e_prob_dist_func g_cached_prob_dist_func = e_prob_dist_func::LINEAR;
 static float g_cached_prob_dist_threshold = 0.0f;
 static float g_cached_prob_huber_delta = 20.0f;
 static ClbNetPinsMatrix<float> g_prob_differential_crit;
+static vtr::vector<ClusterNetId, float> g_net_congestion_cache; // [OPTION C] Per-net congestion for uplift scaling
+static float g_congestion_uplift_gamma = 0.0f; // [OPTION C] How strongly congestion reduces uplift (0=off)
 double g_last_deterministic_cpd = -1.0;
 double g_adaptive_momentum_scaler = 1.0;
 
@@ -230,46 +234,7 @@ void perform_full_timing_update(const t_placer_opts& placer_opts,
         const auto& analyzer = *timing_info->setup_analyzer();
         const auto& delay_calc = *timing_info->delay_calculator();
 
-        // --- REGRESSION TESTS (ONCE PER RUN) ---
-        // 1. Mode 0: Deterministic (Baseline)
-        // 1. Mode 0: Deterministic (Baseline)
-        // Verify it runs without error.
-        ProbTimingConfig cfg0; 
-        cfg0.mode = UncertaintyMode::DETERMINISTIC;
-        PhysicalState phys_state0;
-        update_physical_state(fg, phys_state0, cfg0, placer_state.block_locs());
-        ProbTimingSummary sum0 = run_probabilistic_timing(fg, tg, analyzer, delay_calc, phys_state0, cfg0);
-        (void)sum0; // Silence unused variable warning
-        
-        // 2. Mode 3: PRODUCTION PATH (Default)
-        // 2. Mode 3: PRODUCTION PATH (Default) -> Mode 4 Physical
-        // This will likely yield empty bins on 'tseng' but must be safe.
-        ProbTimingConfig cfg3_prod;
-        cfg3_prod.mode = UncertaintyMode::PHYSICAL_COMBINED;
-        cfg3_prod.alpha = 0.0f; 
-        cfg3_prod.beta = 1.0f;
-        cfg3_prod.forced_binning = false; // Explicity OFF
-        
-        PhysicalState phys_state_prod;
-        update_physical_state(fg, phys_state_prod, cfg3_prod, placer_state.block_locs());
-        ProbTimingSummary sum3_prod = run_probabilistic_timing(fg, tg, analyzer, delay_calc, phys_state_prod, cfg3_prod);
-
-        VTR_LOG("INSTRUMENTATION: Regression [Mode 3 Prod] - Weighted: %zu, Empty: %zu\n", 
-                sum3_prod.num_weighted_edges, sum3_prod.num_empty_weight_edges);
-
-        // 3. Mode 3: VALIDATION HARNESS -> Mode 4 Physical Forced
-        // This confirms the math still works when requested.
-        ProbTimingConfig cfg3_forced;
-        cfg3_forced.mode = UncertaintyMode::PHYSICAL_COMBINED; // Was BIN_LATENT_CORR
-        cfg3_forced.alpha = 0.5f;
-        cfg3_forced.beta = 0.5f;
-        cfg3_forced.forced_binning = true; // Explicitly ON
-        
-        PhysicalState phys_state_forced;
-        update_physical_state(fg, phys_state_forced, cfg3_forced, placer_state.block_locs());
-        ProbTimingSummary sum3_forced = run_probabilistic_timing(fg, tg, analyzer, delay_calc, phys_state_forced, cfg3_forced);
-
-        VTR_LOG("INSTRUMENTATION: Regression [Mode 3 Forced] - Correlation Test. Weighted: %zu\n", sum3_forced.num_weighted_edges);
+    // [REMOVED] Regression Tests for Synchronization Audit
     }
 
     /* Instrumentation: Print timing graph stats and sample edges */
@@ -337,10 +302,10 @@ void perform_full_timing_update(const t_placer_opts& placer_opts,
     g_cached_prob_dist_threshold = placer_opts.prob_dist_threshold;
     g_cached_prob_huber_delta = placer_opts.prob_huber_delta;
 
-    update_timing_cost(delay_model,
-                       criticalities,
-                       placer_state,
-                       &costs->timing_cost);
+    comp_td_costs(delay_model,
+                  *criticalities,
+                  placer_state,
+                  &costs->timing_cost);
 
     // PROB_TIMING_INJECTION_POINT
     {
@@ -441,12 +406,39 @@ void perform_full_timing_update(const t_placer_opts& placer_opts,
             config.alpha = placer_opts.prob_timing_alpha;
             config.beta = placer_opts.prob_timing_beta; 
             config.gamma = crit_params.prob_congestion_gamma; // [PHASE 7]
+            config.gamma_b = crit_params.prob_routing_penalty_gamma; // [Option B]
+            config.beta2 = placer_opts.prob_timing_beta2; // Fanout-aware variance
+            config.beta3 = placer_opts.prob_timing_beta3;
 
             // [PHASE 7.1] Stability v2
             config.slack_gate = crit_params.prob_slack_gate;
             config.hallucination_dampen = crit_params.prob_hallucination_dampen;
             config.momentum_boost = crit_params.prob_momentum_boost;
             config.min_slack = min_slack; // [PHASE 7.1] Relative Slack
+
+            // [ADAPTIVE] CPD-responsive alpha decay (5% tolerance)
+            {
+                static double s_best_cpd = 0.0;
+                static double s_lambda_scale = 1.0;
+                const double TOLERANCE = 0.05;
+                const double DECAY = 0.8;
+                const double GROWTH = 1.02;
+                const double MIN_SCALE = 0.01;
+                double current_cpd = (double)det_CPD_s;
+                if (s_best_cpd <= 0.0 || g_num_timing_updates_seen <= 1) {
+                    s_best_cpd = current_cpd;
+                    s_lambda_scale = 1.0;
+                } else {
+                    if (current_cpd < s_best_cpd) {
+                        s_best_cpd = current_cpd;
+                        s_lambda_scale = std::min(1.0, s_lambda_scale * GROWTH);
+                    } else if (current_cpd > s_best_cpd * (1.0 + TOLERANCE)) {
+                        s_lambda_scale *= DECAY;
+                        if (s_lambda_scale < MIN_SCALE) s_lambda_scale = MIN_SCALE;
+                    }
+                }
+                config.alpha *= (float)s_lambda_scale;
+            }
 
             // [AUTONOMOUS] apply dynamic scale to lambda noise
             float lambda = placer_opts.prob_inject_lambda * placer_state.runtime().lambda_scale;
@@ -458,25 +450,41 @@ void perform_full_timing_update(const t_placer_opts& placer_opts,
                 if (lambda <= 0.0f) lambda = topo.lambda; // Base lambda before ramp
             }
 
-            // [PHASE 7] Dynamic Schedule Ramp
+            // [PHASE 7] Dynamic Schedule Ramp — iteration-count based
+            // Warmup: first RAMP_WARMUP outer iterations → λ=0, α=0 (pure baseline)
+            // Ramp: next RAMP_WARMUP iterations → linearly increase to full values
+            // Full: remaining iterations → full λ and α
+            // This is benchmark-independent (all benchmarks do 70-300 outer iterations)
             if (crit_params.prob_schedule_ramp) {
-                // Heuristic: Start ramp at T < 10.0, linear increase as T drops.
-                // Placer T starts high (e.g. 100) and drops to ~0.001.
-                float ramp = 1.0f;
-                if (crit_params.current_temp > 10.0f) {
-                    ramp = 0.0f; // Silent in random phase
-                } else if (crit_params.current_temp > 0.1f) {
-                    ramp = 1.0f - (crit_params.current_temp / 10.0f);
+                static size_t ramp_call_count = 0;
+                ramp_call_count++;
+
+                const size_t RAMP_WARMUP = 30;   // iterations of pure baseline
+                const size_t RAMP_TRANSITION = 30; // iterations to ramp from 0 to full
+
+                float ramp = 0.0f;
+                if (ramp_call_count <= RAMP_WARMUP) {
+                    ramp = 0.0f;
+                } else if (ramp_call_count <= RAMP_WARMUP + RAMP_TRANSITION) {
+                    ramp = (float)(ramp_call_count - RAMP_WARMUP) / (float)RAMP_TRANSITION;
+                } else {
+                    ramp = 1.0f;
                 }
+
                 lambda *= ramp;
-                
-                if (g_num_timing_updates_seen % 10 == 0) {
-                    VTR_LOG("AUTONOMOUS_ENGINE: Temp=%.4f Ramp=%.4f λ_eff=%.4f\n", 
-                            crit_params.current_temp, ramp, lambda);
+                config.alpha *= ramp;
+
+                if (ramp_call_count % 10 == 0 || ramp_call_count <= 5) {
+                    VTR_LOG("SCHEDULE_RAMP: iter=%zu ramp=%.3f λ_eff=%.4f α_eff=%.6f\n",
+                            ramp_call_count, ramp, lambda, config.alpha);
                 }
             }
 
             reset_moment_stats();
+            // [Option B] Ensure channel utilization is computed when routing penalty is active
+            if (config.gamma_b > 1e-9f && crit_params.net_cost_handler) {
+                const_cast<NetCostHandler*>(crit_params.net_cost_handler)->estimate_routing_chan_util(false);
+            }
             update_physical_state(*g_fg_view, g_phys_state, config, placer_state.block_locs(), crit_params.net_cost_handler);
             summary = run_probabilistic_timing(*g_fg_view, tg, *analyzer, *timing_info->delay_calculator(), g_phys_state, config);
 
@@ -562,10 +570,7 @@ void perform_full_timing_update(const t_placer_opts& placer_opts,
                 float det_cpd_ns = (float)det_CPD_s * 1e9f;
                 
                 // [NEW] Populate Adaptive Differential Criticality Matrix BEFORE cost calculation
-                // Gate: Only inject on benchmarks with sufficient graph size (>=5000 nodes).
-                // Small benchmarks have high inherent variance; injection adds noise with no signal.
-                bool graph_large_enough = g_fg_view && g_fg_view->num_nodes >= 5000;
-                if (inject_enabled && g_fg_view && graph_large_enough) {
+                if (inject_enabled && g_fg_view) {
                     const auto& cluster_ctx = g_vpr_ctx.clustering();
                     const auto& atom_ctx = g_vpr_ctx.atom();
                     const auto& clb_nlist = cluster_ctx.clb_nlist;
@@ -664,6 +669,55 @@ void perform_full_timing_update(const t_placer_opts& placer_opts,
                 // [CHANGED] Store normalization factors for connection-level scaling
                 g_cached_risk_norm = risk_norm;
                 g_cached_prob_lambda = lambda;
+
+                // [OPTION C] Populate per-net congestion cache for uplift scaling
+                // Uses separate gamma from Option A (factor graph edge variance)
+                g_congestion_uplift_gamma = crit_params.prob_uplift_congestion_gamma;
+                if (g_congestion_uplift_gamma > 0.0f && crit_params.net_cost_handler) {
+                    // Force channel utilization estimation even if VPR's congestion modeling hasn't started
+                    const_cast<NetCostHandler*>(crit_params.net_cost_handler)->estimate_routing_chan_util(false);
+                    const auto& clb_nlist = g_vpr_ctx.clustering().clb_nlist;
+                    if (g_net_congestion_cache.size() != clb_nlist.nets().size()) {
+                        g_net_congestion_cache.resize(clb_nlist.nets().size(), 0.0f);
+                    }
+                    // Use channel utilization to estimate per-net congestion
+                    const auto& chan_util = crit_params.net_cost_handler->get_chan_util();
+                    const auto& blk_locs = placer_state.block_locs();
+                    for (ClusterNetId nid : clb_nlist.nets()) {
+                        // Estimate congestion as average channel util within net's bounding box
+                        ClusterBlockId driver = clb_nlist.net_driver_block(nid);
+                        auto driver_loc = blk_locs[driver].loc;
+                        float max_cong = 0.0f;
+                        for (auto pin_id : clb_nlist.net_sinks(nid)) {
+                            ClusterBlockId sink = clb_nlist.pin_block(pin_id);
+                            auto sink_loc = blk_locs[sink].loc;
+                            int x = (driver_loc.x + sink_loc.x) / 2;
+                            int y = (driver_loc.y + sink_loc.y) / 2;
+                            int layer = driver_loc.layer;
+                            if (!chan_util.x.empty() &&
+                                layer < (int)chan_util.x.dim_size(0) &&
+                                x < (int)chan_util.x.dim_size(1) &&
+                                y < (int)chan_util.x.dim_size(2)) {
+                                float cx = (float)chan_util.x[layer][x][y];
+                                float cy = (float)chan_util.y[layer][x][y];
+                                max_cong = std::max(max_cong, (cx + cy) * 0.5f);
+                            }
+                        }
+                        g_net_congestion_cache[nid] = std::min(max_cong, 1.0f);
+                    }
+                    // [DEBUG] Report congestion cache stats
+                    float sum_cong = 0.0f, max_cong_all = 0.0f;
+                    int nonzero = 0;
+                    for (ClusterNetId nid2 : clb_nlist.nets()) {
+                        float c = g_net_congestion_cache[nid2];
+                        sum_cong += c;
+                        if (c > 0.0f) nonzero++;
+                        max_cong_all = std::max(max_cong_all, c);
+                    }
+                    VTR_LOG("[OPTION_C] gamma=%.2f nets=%zu nonzero_cong=%d max_cong=%.4f avg_cong=%.4f\n",
+                            g_congestion_uplift_gamma, clb_nlist.nets().size(), nonzero, max_cong_all,
+                            sum_cong / std::max((size_t)1, clb_nlist.nets().size()));
+                }
                 
                 comp_td_costs(delay_model, *criticalities, placer_state, &costs->timing_cost); 
                 
@@ -952,7 +1006,7 @@ void comp_td_costs(const PlaceDelayModel* delay_model,
         if (cluster_ctx.clb_nlist.net_is_ignored(net_id)) continue;
 
         for (size_t ipin = 1; ipin < cluster_ctx.clb_nlist.net_pins(net_id).size(); ipin++) {
-            float conn_timing_cost = comp_td_connection_cost(delay_model, place_crit, placer_state, net_id, ipin);
+            double conn_timing_cost = comp_td_connection_cost(delay_model, place_crit, placer_state, net_id, ipin);
 
             /* Record new value */
             connection_timing_cost[net_id][ipin] = conn_timing_cost;
@@ -1066,28 +1120,9 @@ double comp_td_connection_cost(const PlaceDelayModel* delay_model,
             }
         }
 
-        // [NEW] Logic-Depth Confidence Scaling
+        // [TUNED] Logic-Depth Confidence Scaling Removed for Synchronization Audit
         float lambda_eff = (float)g_cached_prob_lambda;
-        if (g_fg_view && !g_fg_view->node_levels.empty()) {
-            const auto& cluster_ctx = g_vpr_ctx.clustering();
-            const auto& clb_nlist = cluster_ctx.clb_nlist;
-            ClusterPinId sink_pin = clb_nlist.net_pin(net, ipin);
-            
-            int max_depth = 0;
-            const auto& atom_ctx = g_vpr_ctx.atom();
-            for (auto atom_pin : place_crit.pin_lookup().connected_atom_pins(sink_pin)) {
-                tatum::NodeId node_id = atom_ctx.lookup().atom_pin_tnode(atom_pin);
-                if (node_id) {
-                    size_t n_idx = size_t(node_id);
-                    if (n_idx < g_fg_view->node_levels.size()) {
-                        max_depth = std::max(max_depth, g_fg_view->node_levels[n_idx]);
-                    }
-                }
-            }
-            lambda_eff *= std::log2(std::max(0.0f, (float)max_depth - 3.0f) + 1.0f);
-        }
-        // [TUNED] Optimal cap: 0.05 (confirmed by Stage 1 lambda sweep)
-        lambda_eff = std::min(lambda_eff, 0.05f);
+        // [TUNED] Capping removed for Synchronization Audit
 
         // [NEW] Topology Dampening & Linearized Criticality
         float crit_diff = 0.0f;
@@ -1097,12 +1132,20 @@ double comp_td_connection_cost(const PlaceDelayModel* delay_model,
             }
         }
 
-        double scaler = 1.0 + (double)lambda_eff * std::sqrt(crit_diff) * g_cached_risk_norm * geom_scaler;
-        if (size_t(net) % 2000 == 0 && ipin == 1 && crit_diff > 0.001) {
-            VTR_LOG("DEBUG_SCALER_P6: net=%zu depth_scaled_lambda=%.4f crit_diff=%.4f scaler=%.4f risk=%.2f\n",
-                    size_t(net), (double)lambda_eff, (double)crit_diff, (double)scaler, (double)g_cached_risk_norm);
+        // [TUNED] Simplified Linear Scaler for Synchronization with "Original Inference Method"
+        // Only apply if PQT is explicitly enabled to ensure 100% clean baseline.
+        if (g_cached_prob_lambda > 0.0) {
+            // [OPTION C] Scale down uplift in congested regions to prevent routing reversals
+            if (g_congestion_uplift_gamma > 0.0f && !g_net_congestion_cache.empty() &&
+                size_t(net) < g_net_congestion_cache.size()) {
+                float cong = g_net_congestion_cache[net];
+                // Reduce uplift: high congestion → less timing pressure
+                // crit_diff *= (1 - gamma * congestion)
+                crit_diff *= std::max(0.0f, 1.0f - g_congestion_uplift_gamma * cong);
+            }
+            double scaler = 1.0 + (double)lambda_eff * (double)crit_diff;
+            conn_timing_cost *= scaler;
         }
-        conn_timing_cost *= scaler;
     }
 
     return conn_timing_cost; 
@@ -1233,4 +1276,631 @@ void finish_prob_inject_step1_audit(const std::string& circuit_name, int seed, S
             VTR_LOG_ERROR("Failed to open audit file %s for writing\n", csv_filename.c_str());
         }
     }
+}
+
+// =========================================================================
+// Factor-Graph Proxy Checkpoint Instrumentation
+// =========================================================================
+
+// Cache for previous-iteration uplifts (for drift computation)
+static ClbNetPinsMatrix<float> g_proxy_prev_uplift;
+static bool g_proxy_prev_valid = false;
+
+void emit_factor_graph_proxy_checkpoint(
+    int iteration,
+    SetupTimingInfo* timing_info,
+    const PlacerCriticalities* criticalities,
+    const PlacerState& placer_state,
+    const t_placer_opts& placer_opts,
+    const std::string& output_path,
+    double bb_cost,
+    double timing_cost,
+    double total_cost,
+    double bb_cost_norm,
+    double timing_cost_norm) {
+
+    if (!g_fg_view || output_path.empty()) return;
+
+    auto t_checkpoint_start = std::chrono::steady_clock::now();
+
+    const auto& cluster_ctx = g_vpr_ctx.clustering();
+    const auto& atom_ctx    = g_vpr_ctx.atom();
+    const auto& clb_nlist   = cluster_ctx.clb_nlist;
+    const auto& tg          = *timing_info->timing_graph();
+    const auto& pin_lookup  = criticalities->pin_lookup();
+
+    // max_required is computed after Pass 1 where det_CPD_s is available
+
+    // --- Pass 0: Compute per-net HPWL from current placement ---
+    const auto& block_locs = placer_state.block_locs();
+    std::unordered_map<size_t, double> net_hpwl_map;
+    std::vector<double> all_net_hpwls;
+    all_net_hpwls.reserve(clb_nlist.nets().size());
+
+    for (auto net_id : clb_nlist.nets()) {
+        if (clb_nlist.net_is_ignored(net_id)) continue;
+        const auto& net_pins = clb_nlist.net_pins(net_id);
+        if (net_pins.size() < 2) continue;
+
+        auto src_blk = clb_nlist.net_driver_block(net_id);
+        auto src_loc = block_locs[src_blk].loc;
+        int min_x = src_loc.x, max_x = src_loc.x;
+        int min_y = src_loc.y, max_y = src_loc.y;
+
+        for (size_t ipin = 1; ipin < net_pins.size(); ipin++) {
+            auto pin_blk = clb_nlist.net_pin_block(net_id, ipin);
+            auto pin_loc = block_locs[pin_blk].loc;
+            if (pin_loc.x < min_x) min_x = pin_loc.x;
+            if (pin_loc.x > max_x) max_x = pin_loc.x;
+            if (pin_loc.y < min_y) min_y = pin_loc.y;
+            if (pin_loc.y > max_y) max_y = pin_loc.y;
+        }
+        double hpwl = (double)(max_x - min_x) + (double)(max_y - min_y);
+        net_hpwl_map[(size_t)net_id] = hpwl;
+        all_net_hpwls.push_back(hpwl);
+    }
+
+    // Net BB distribution stats
+    std::sort(all_net_hpwls.begin(), all_net_hpwls.end());
+    size_t nn = all_net_hpwls.size();
+    double net_bb_mean = 0.0, net_bb_std = 0.0;
+    double net_bb_p50 = 0.0, net_bb_p90 = 0.0, net_bb_p99 = 0.0, net_bb_max = 0.0;
+    if (nn > 0) {
+        double s = 0.0;
+        for (double v : all_net_hpwls) s += v;
+        net_bb_mean = s / nn;
+        double sq = 0.0;
+        for (double v : all_net_hpwls) sq += (v - net_bb_mean) * (v - net_bb_mean);
+        net_bb_std = std::sqrt(sq / nn);
+        net_bb_p50 = all_net_hpwls[nn / 2];
+        net_bb_p90 = all_net_hpwls[std::min(nn - 1, (size_t)(nn * 0.90))];
+        net_bb_p99 = all_net_hpwls[std::min(nn - 1, (size_t)(nn * 0.99))];
+        net_bb_max = all_net_hpwls.back();
+    }
+
+    // --- Pass 1: Compute per-connection uplift + hybrid metrics ---
+    std::vector<float> all_uplifts;
+    all_uplifts.reserve(clb_nlist.nets().size() * 4);
+
+    // Existing accumulators
+    double sum_uplift = 0.0;
+    double sum_positive_uplift = 0.0;
+    double drift_sum_abs = 0.0;
+    size_t num_edges_scored = 0;
+    bool drift_valid = g_proxy_prev_valid && (iteration > 0);
+
+    // Hybrid accumulators: factor-graph × placement
+    double sum_uplift_times_hpwl = 0.0;  // for uplift-weighted BB
+    double sum_pos_uplift_for_wbb = 0.0;
+    double sum_crit_times_hpwl = 0.0;    // for crit-weighted BB
+    double sum_crit_for_wbb = 0.0;
+    size_t num_crit_conns = 0;           // connections with det_crit > 0.9
+
+    // For correlation: store per-connection (uplift, hpwl) pairs
+    std::vector<float> conn_uplifts_vec;
+    std::vector<double> conn_hpwls_vec;
+    conn_uplifts_vec.reserve(clb_nlist.nets().size() * 4);
+    conn_hpwls_vec.reserve(clb_nlist.nets().size() * 4);
+
+    // For high-uplift BB analysis
+    struct UpliftBB { float uplift; double hpwl; };
+    std::vector<UpliftBB> uplift_bb_pairs;
+    uplift_bb_pairs.reserve(clb_nlist.nets().size() * 4);
+
+    // Number of critical nets (max pin crit > 0.9)
+    size_t num_crit_nets = 0;
+
+    // Initialize prev cache if needed
+    if (g_proxy_prev_uplift.empty()) {
+        g_proxy_prev_uplift = make_net_pins_matrix<float>(clb_nlist, 0.0f);
+    }
+
+    for (auto net_id : clb_nlist.nets()) {
+        if (clb_nlist.net_is_ignored(net_id)) continue;
+
+        double net_hpwl = 0.0;
+        auto it = net_hpwl_map.find((size_t)net_id);
+        if (it != net_hpwl_map.end()) net_hpwl = it->second;
+
+        float net_max_det_crit = 0.0f;
+
+        for (auto pin_id : clb_nlist.net_sinks(net_id)) {
+            int ipin = clb_nlist.pin_net_index(pin_id);
+            float uplift = g_prob_differential_crit[net_id][ipin];
+            all_uplifts.push_back(uplift);
+            sum_uplift += (double)uplift;
+            if (uplift > 0.0f) sum_positive_uplift += (double)uplift;
+            num_edges_scored++;
+
+            if (drift_valid) {
+                drift_sum_abs += std::abs((double)uplift - (double)g_proxy_prev_uplift[net_id][ipin]);
+            }
+            g_proxy_prev_uplift[net_id][ipin] = uplift;
+
+            // Get deterministic criticality for this connection
+            float det_crit = criticalities->criticality(net_id, ipin);
+            net_max_det_crit = std::max(net_max_det_crit, det_crit);
+            if (det_crit > 0.9f) num_crit_conns++;
+
+            // Hybrid: accumulate uplift×hpwl and crit×hpwl
+            if (uplift > 0.0f) {
+                sum_uplift_times_hpwl += (double)uplift * net_hpwl;
+                sum_pos_uplift_for_wbb += (double)uplift;
+            }
+            sum_crit_times_hpwl += (double)det_crit * net_hpwl;
+            sum_crit_for_wbb += (double)det_crit;
+
+            // Store for correlation and top-k analysis
+            conn_uplifts_vec.push_back(uplift);
+            conn_hpwls_vec.push_back(net_hpwl);
+            uplift_bb_pairs.push_back({uplift, net_hpwl});
+        }
+
+        if (net_max_det_crit > 0.9f) num_crit_nets++;
+    }
+
+    // Compute hybrid features
+    double uplift_weighted_bb = (sum_pos_uplift_for_wbb > 0.0)
+        ? sum_uplift_times_hpwl / sum_pos_uplift_for_wbb : 0.0;
+    double crit_weighted_bb = (sum_crit_for_wbb > 0.0)
+        ? sum_crit_times_hpwl / sum_crit_for_wbb : 0.0;
+
+    // High-uplift mean BB: sort by uplift desc, take top 10% mean BB
+    std::sort(uplift_bb_pairs.begin(), uplift_bb_pairs.end(),
+              [](const UpliftBB& a, const UpliftBB& b) { return a.uplift > b.uplift; });
+    double high_uplift_mean_bb = 0.0;
+    double low_uplift_mean_bb = 0.0;
+    if (!uplift_bb_pairs.empty()) {
+        size_t top10pct = std::max((size_t)1, uplift_bb_pairs.size() / 10);
+        double s = 0.0;
+        for (size_t i = 0; i < top10pct; i++) s += uplift_bb_pairs[i].hpwl;
+        high_uplift_mean_bb = s / top10pct;
+        double s2 = 0.0;
+        size_t cnt = 0;
+        for (size_t i = top10pct; i < uplift_bb_pairs.size(); i++) {
+            s2 += uplift_bb_pairs[i].hpwl;
+            cnt++;
+        }
+        low_uplift_mean_bb = (cnt > 0) ? s2 / cnt : 0.0;
+    }
+
+    // Pearson correlation between uplift and HPWL
+    double uplift_bb_pearson = 0.0;
+    {
+        size_t nc = conn_uplifts_vec.size();
+        if (nc > 2) {
+            double su = 0, sh = 0;
+            for (size_t i = 0; i < nc; i++) { su += conn_uplifts_vec[i]; sh += conn_hpwls_vec[i]; }
+            double mu = su / nc, mh = sh / nc;
+            double cov = 0, vu = 0, vh = 0;
+            for (size_t i = 0; i < nc; i++) {
+                double du = conn_uplifts_vec[i] - mu;
+                double dh = conn_hpwls_vec[i] - mh;
+                cov += du * dh;
+                vu += du * du;
+                vh += dh * dh;
+            }
+            double denom = std::sqrt(vu * vh);
+            uplift_bb_pearson = (denom > 0.0) ? cov / denom : 0.0;
+        }
+    }
+
+    // Cost deltas from iteration 0 (static cache)
+    static double cached_bb_cost_iter0 = 0.0;
+    static double cached_timing_cost_iter0 = 0.0;
+    static double cached_pre_route_cpd_iter0 = 0.0;
+    float det_CPD_s = timing_info->least_slack_critical_path().delay().value();
+    if (iteration == 0) {
+        cached_bb_cost_iter0 = bb_cost;
+        cached_timing_cost_iter0 = timing_cost;
+        cached_pre_route_cpd_iter0 = (double)det_CPD_s;
+    }
+    double bb_cost_delta = bb_cost - cached_bb_cost_iter0;
+    double timing_cost_delta = timing_cost - cached_timing_cost_iter0;
+    double pre_route_cpd_delta = (double)det_CPD_s - cached_pre_route_cpd_iter0;
+
+    double mean_crit_uplift = (num_edges_scored > 0) ? sum_uplift / num_edges_scored : 0.0;
+
+    // --- Feature 2: Activated Mass ---
+    // Sort uplifts descending to find percentile thresholds
+    std::vector<float> sorted_uplifts = all_uplifts;
+    std::sort(sorted_uplifts.begin(), sorted_uplifts.end(), std::greater<float>());
+
+    auto compute_activated_mass = [&](float pct) -> double {
+        if (sum_positive_uplift <= 0.0 || sorted_uplifts.empty()) return -1.0; // NULL sentinel
+        size_t k = std::max((size_t)1, (size_t)(sorted_uplifts.size() * pct));
+        double top_sum = 0.0;
+        for (size_t i = 0; i < k && i < sorted_uplifts.size(); i++) {
+            top_sum += std::max(0.0f, sorted_uplifts[i]);
+        }
+        return top_sum / sum_positive_uplift;
+    };
+
+    double am_1  = compute_activated_mass(0.01f);
+    double am_2  = compute_activated_mass(0.02f);
+    double am_5  = compute_activated_mass(0.05f);
+    double am_10 = compute_activated_mass(0.10f);
+
+    // --- Pass 2: Timing-graph node metrics ---
+    // Reconvergence pressure + tight competition fraction
+    // Using g_fg_view->mu_var_B[edge] for candidate arrivals
+
+    size_t num_timing_nodes = g_fg_view->num_nodes;
+    size_t num_multiinput_nodes = 0;
+    double max_arrival_global = 0.0;
+    double sum_arrival = 0.0;
+    double sum_max_fanin_minus1 = 0.0; // upper bound for reconvergence pressure
+
+    int rp_1 = 0, rp_2 = 0, rp_5 = 0, rp_10 = 0;
+    int tcf_1_num = 0, tcf_2_num = 0, tcf_5_num = 0, tcf_10_num = 0;
+
+    size_t nodes_with_arrivals = 0;
+    for (size_t n = 0; n < num_timing_nodes; n++) {
+        const auto& in_e = g_fg_view->in_edges[n];
+        if (in_e.empty()) continue;
+
+        // Compute max arrival among incoming edges
+        double m_max = -std::numeric_limits<double>::infinity();
+        std::vector<double> arrivals;
+        arrivals.reserve(in_e.size());
+
+        for (auto eid : in_e) {
+            size_t ei = (size_t)eid;
+            if (ei < g_fg_view->mu_var_B.size() && g_fg_view->mu_var_B[ei].is_set()) {
+                double a = g_fg_view->mu_var_B[ei].mu;
+                arrivals.push_back(a);
+                m_max = std::max(m_max, a);
+            }
+        }
+
+        if (arrivals.empty() || !std::isfinite(m_max)) continue;
+
+        nodes_with_arrivals++;
+        sum_arrival += m_max;
+        max_arrival_global = std::max(max_arrival_global, m_max);
+
+        if (arrivals.size() < 2) continue;
+
+        num_multiinput_nodes++;
+        sum_max_fanin_minus1 += (double)(arrivals.size() - 1);
+
+        // Sort descending for top-2 and reconvergence
+        std::sort(arrivals.begin(), arrivals.end(), std::greater<double>());
+        double m1 = arrivals[0];
+        double m2 = arrivals[1];
+        double margin = m1 - m2;
+
+        // Reconvergence pressure: count near-critical incoming edges
+        double thresholds[] = {0.01, 0.02, 0.05, 0.10};
+        int rp_counts[4] = {0, 0, 0, 0};
+        for (double a : arrivals) {
+            for (int t = 0; t < 4; t++) {
+                if (m_max - a <= thresholds[t] * std::abs(m_max)) {
+                    rp_counts[t]++;
+                }
+            }
+        }
+        rp_1  += std::max(0, rp_counts[0] - 1);
+        rp_2  += std::max(0, rp_counts[1] - 1);
+        rp_5  += std::max(0, rp_counts[2] - 1);
+        rp_10 += std::max(0, rp_counts[3] - 1);
+
+        // Tight competition fraction
+        if (m1 > 0.0) {
+            if (margin <= 0.01 * m1) tcf_1_num++;
+            if (margin <= 0.02 * m1) tcf_2_num++;
+            if (margin <= 0.05 * m1) tcf_5_num++;
+            if (margin <= 0.10 * m1) tcf_10_num++;
+        }
+    }
+
+    double mean_arrival_global = (nodes_with_arrivals > 0) ? sum_arrival / nodes_with_arrivals : 0.0;
+    double tcf_1  = (num_multiinput_nodes > 0) ? (double)tcf_1_num  / num_multiinput_nodes : 0.0;
+    double tcf_2  = (num_multiinput_nodes > 0) ? (double)tcf_2_num  / num_multiinput_nodes : 0.0;
+    double tcf_5  = (num_multiinput_nodes > 0) ? (double)tcf_5_num  / num_multiinput_nodes : 0.0;
+    double tcf_10 = (num_multiinput_nodes > 0) ? (double)tcf_10_num / num_multiinput_nodes : 0.0;
+
+    // --- Feature 5: Uplift Drift ---
+    static double g_proxy_prev_mean_uplift = 0.0;
+    double uplift_drift_mean = -1.0;  // NULL sentinel
+    double uplift_drift_field = -1.0; // NULL sentinel
+    if (iteration > 0 && drift_valid) {
+        uplift_drift_mean = std::abs(mean_crit_uplift - g_proxy_prev_mean_uplift);
+        uplift_drift_field = (num_edges_scored > 0) ? drift_sum_abs / num_edges_scored : 0.0;
+    }
+    g_proxy_prev_mean_uplift = mean_crit_uplift;
+    g_proxy_prev_valid = true;
+
+    // --- Sanity Checks ---
+    bool sum_positive_uplift_zero = (sum_positive_uplift <= 0.0);
+    if (sum_positive_uplift_zero) {
+        am_1 = am_2 = am_5 = am_10 = -1.0; // NULL
+    }
+
+    // Activated mass bounds
+    bool am_1_valid = (am_1 < 0) || (am_1 >= 0.0 && am_1 <= 1.0 + 1e-9);
+    bool am_2_valid = (am_2 < 0) || (am_2 >= 0.0 && am_2 <= 1.0 + 1e-9);
+    bool am_5_valid = (am_5 < 0) || (am_5 >= 0.0 && am_5 <= 1.0 + 1e-9);
+    bool am_10_valid = (am_10 < 0) || (am_10 >= 0.0 && am_10 <= 1.0 + 1e-9);
+
+    // TCF bounds
+    bool tcf_1_valid = (tcf_1 >= 0.0 && tcf_1 <= 1.0 + 1e-9);
+    bool tcf_2_valid = (tcf_2 >= 0.0 && tcf_2 <= 1.0 + 1e-9);
+    bool tcf_5_valid = (tcf_5 >= 0.0 && tcf_5 <= 1.0 + 1e-9);
+    bool tcf_10_valid = (tcf_10 >= 0.0 && tcf_10 <= 1.0 + 1e-9);
+
+    // RP bounds
+    bool rp_1_valid = (rp_1 >= 0 && (double)rp_1 <= sum_max_fanin_minus1 + 1);
+    bool rp_2_valid = (rp_2 >= 0 && (double)rp_2 <= sum_max_fanin_minus1 + 1);
+    bool rp_5_valid = (rp_5 >= 0 && (double)rp_5 <= sum_max_fanin_minus1 + 1);
+    bool rp_10_valid = (rp_10 >= 0 && (double)rp_10 <= sum_max_fanin_minus1 + 1);
+
+    // Monotonicity
+    bool am_mono = (am_1 < 0) || (am_1 <= am_2 + 1e-9 && am_2 <= am_5 + 1e-9 && am_5 <= am_10 + 1e-9);
+    bool rp_mono = (rp_1 <= rp_2 && rp_2 <= rp_5 && rp_5 <= rp_10);
+    bool tcf_mono = (tcf_1 <= tcf_2 + 1e-9 && tcf_2 <= tcf_5 + 1e-9 && tcf_5 <= tcf_10 + 1e-9);
+
+    // Drift checks
+    bool drift_null_ok = (iteration == 0) ? (uplift_drift_mean < 0 && uplift_drift_field < 0)
+                                          : (uplift_drift_mean >= 0 && uplift_drift_field >= 0);
+    bool drift_nonneg = (iteration == 0) || (uplift_drift_mean >= 0 && uplift_drift_field >= 0);
+
+    // Row validity
+    bool row_valid = am_1_valid && am_2_valid && am_5_valid && am_10_valid
+                  && tcf_1_valid && tcf_2_valid && tcf_5_valid && tcf_10_valid
+                  && rp_1_valid && rp_2_valid && rp_5_valid && rp_10_valid
+                  && am_mono && rp_mono && tcf_mono && drift_null_ok && drift_nonneg;
+
+    // --- Write CSV ---
+    bool write_header = false;
+    {
+        FILE* test = fopen(output_path.c_str(), "r");
+        if (!test) {
+            write_header = true;
+        } else {
+            fclose(test);
+        }
+    }
+
+    FILE* fp = fopen(output_path.c_str(), "a");
+    if (!fp) {
+        VTR_LOG_ERROR("PROXY_CHECKPOINT: Cannot open %s for writing\n", output_path.c_str());
+        return;
+    }
+
+    if (write_header) {
+        fprintf(fp, "iteration,"
+            "pre_route_cpd,"
+            "bb_cost,timing_cost,total_cost,bb_cost_norm,timing_cost_norm,"
+            "bb_cost_delta,timing_cost_delta,pre_route_cpd_delta,"
+            "net_bb_mean,net_bb_p50,net_bb_p90,net_bb_p99,net_bb_max,net_bb_std,"
+            "num_crit_nets,num_crit_conns,"
+            "uplift_weighted_bb,crit_weighted_bb,"
+            "high_uplift_mean_bb,low_uplift_mean_bb,"
+            "uplift_bb_pearson,"
+            "mean_crit_uplift,"
+            "activated_mass_1pct,activated_mass_2pct,activated_mass_5pct,activated_mass_10pct,"
+            "reconvergence_pressure_1,reconvergence_pressure_2,reconvergence_pressure_5,reconvergence_pressure_10,"
+            "tight_competition_fraction_1,tight_competition_fraction_2,tight_competition_fraction_5,tight_competition_fraction_10,"
+            "uplift_drift_mean,uplift_drift_field,"
+            "num_edges_scored,num_timing_nodes,num_multiinput_nodes,"
+            "sum_positive_uplift,max_arrival_global,mean_arrival_global,"
+            "activated_mass_1_valid,activated_mass_2_valid,activated_mass_5_valid,activated_mass_10_valid,"
+            "tight_competition_fraction_1_valid,tight_competition_fraction_2_valid,tight_competition_fraction_5_valid,tight_competition_fraction_10_valid,"
+            "reconvergence_pressure_1_valid,reconvergence_pressure_2_valid,reconvergence_pressure_5_valid,reconvergence_pressure_10_valid,"
+            "activated_mass_monotonic_flag,reconvergence_pressure_monotonic_flag,tight_competition_monotonic_flag,"
+            "uplift_drift_nullability_flag,uplift_drift_nonnegative_flag,"
+            "sum_positive_uplift_zero_flag,"
+            "row_valid_flag,"
+            "checkpoint_compute_ms\n");
+    }
+
+    auto fmtf = [](double v) -> std::string {
+        if (v < 0) return ""; // NULL
+        char buf[64];
+        snprintf(buf, sizeof(buf), "%.9g", v);
+        return buf;
+    };
+
+    auto t_checkpoint_end = std::chrono::steady_clock::now();
+    double checkpoint_ms = std::chrono::duration<double, std::milli>(t_checkpoint_end - t_checkpoint_start).count();
+
+    // pre_route_cpd from det_CPD_s computed in Pass 1
+    double pre_route_cpd = (double)det_CPD_s;
+
+    fprintf(fp, "%d,"
+        "%.9g,"
+        "%.9g,%.9g,%.9g,%.9g,%.9g,"
+        "%.9g,%.9g,%.9g,"
+        "%.9g,%.9g,%.9g,%.9g,%.9g,%.9g,"
+        "%zu,%zu,"
+        "%.9g,%.9g,"
+        "%.9g,%.9g,"
+        "%.9g,"
+        "%.9g,"
+        "%s,%s,%s,%s,"
+        "%d,%d,%d,%d,"
+        "%.9g,%.9g,%.9g,%.9g,"
+        "%s,%s,"
+        "%zu,%zu,%zu,"
+        "%.9g,%.9g,%.9g,"
+        "%d,%d,%d,%d,"
+        "%d,%d,%d,%d,"
+        "%d,%d,%d,%d,"
+        "%d,%d,%d,"
+        "%d,%d,"
+        "%d,"
+        "%d,"
+        "%.3f\n",
+        iteration,
+        pre_route_cpd,
+        bb_cost, timing_cost, total_cost, bb_cost_norm, timing_cost_norm,
+        bb_cost_delta, timing_cost_delta, pre_route_cpd_delta,
+        net_bb_mean, net_bb_p50, net_bb_p90, net_bb_p99, net_bb_max, net_bb_std,
+        num_crit_nets, num_crit_conns,
+        uplift_weighted_bb, crit_weighted_bb,
+        high_uplift_mean_bb, low_uplift_mean_bb,
+        uplift_bb_pearson,
+        mean_crit_uplift,
+        fmtf(am_1).c_str(), fmtf(am_2).c_str(), fmtf(am_5).c_str(), fmtf(am_10).c_str(),
+        rp_1, rp_2, rp_5, rp_10,
+        tcf_1, tcf_2, tcf_5, tcf_10,
+        fmtf(uplift_drift_mean).c_str(), fmtf(uplift_drift_field).c_str(),
+        num_edges_scored, num_timing_nodes, num_multiinput_nodes,
+        sum_positive_uplift, max_arrival_global, mean_arrival_global,
+        (int)am_1_valid, (int)am_2_valid, (int)am_5_valid, (int)am_10_valid,
+        (int)tcf_1_valid, (int)tcf_2_valid, (int)tcf_5_valid, (int)tcf_10_valid,
+        (int)rp_1_valid, (int)rp_2_valid, (int)rp_5_valid, (int)rp_10_valid,
+        (int)am_mono, (int)rp_mono, (int)tcf_mono,
+        (int)drift_null_ok, (int)drift_nonneg,
+        (int)sum_positive_uplift_zero,
+        (int)row_valid,
+        checkpoint_ms);
+
+    fclose(fp);
+
+    VTR_LOG("PROXY_CHECKPOINT: iter=%d edges=%zu nodes=%zu multi=%zu mean_uplift=%.6g am1=%.4f rp1=%d tcf1=%.4f valid=%d compute_ms=%.3f\n",
+            iteration, num_edges_scored, num_timing_nodes, num_multiinput_nodes,
+            mean_crit_uplift, (am_1 >= 0 ? am_1 : 0.0), rp_1, tcf_1, (int)row_valid, checkpoint_ms);
+}
+
+void emit_geometry_only_proxy_checkpoint(
+    int iteration,
+    const PlacerState& placer_state,
+    const std::string& output_path,
+    double bb_cost) {
+
+    if (output_path.empty()) return;
+
+    auto t_checkpoint_start = std::chrono::steady_clock::now();
+
+    const auto& cluster_ctx = g_vpr_ctx.clustering();
+    const auto& clb_nlist   = cluster_ctx.clb_nlist;
+    const auto& block_locs  = placer_state.block_locs();
+
+    // Compute per-net HPWL from current placement
+    std::vector<double> all_net_hpwls;
+    all_net_hpwls.reserve(clb_nlist.nets().size());
+
+    for (auto net_id : clb_nlist.nets()) {
+        if (clb_nlist.net_is_ignored(net_id)) continue;
+        const auto& net_pins = clb_nlist.net_pins(net_id);
+        if (net_pins.size() < 2) continue;
+
+        auto src_blk = clb_nlist.net_driver_block(net_id);
+        auto src_loc = block_locs[src_blk].loc;
+        int min_x = src_loc.x, max_x = src_loc.x;
+        int min_y = src_loc.y, max_y = src_loc.y;
+
+        for (size_t ipin = 1; ipin < net_pins.size(); ipin++) {
+            auto pin_blk = clb_nlist.net_pin_block(net_id, ipin);
+            auto pin_loc = block_locs[pin_blk].loc;
+            if (pin_loc.x < min_x) min_x = pin_loc.x;
+            if (pin_loc.x > max_x) max_x = pin_loc.x;
+            if (pin_loc.y < min_y) min_y = pin_loc.y;
+            if (pin_loc.y > max_y) max_y = pin_loc.y;
+        }
+        double hpwl = (double)(max_x - min_x) + (double)(max_y - min_y);
+        all_net_hpwls.push_back(hpwl);
+    }
+
+    // Net BB distribution stats
+    std::sort(all_net_hpwls.begin(), all_net_hpwls.end());
+    size_t nn = all_net_hpwls.size();
+    double net_bb_mean = 0.0, net_bb_std = 0.0;
+    double net_bb_p50 = 0.0, net_bb_p90 = 0.0, net_bb_p99 = 0.0, net_bb_max = 0.0;
+    if (nn > 0) {
+        double s = 0.0;
+        for (double v : all_net_hpwls) s += v;
+        net_bb_mean = s / nn;
+        double sq = 0.0;
+        for (double v : all_net_hpwls) sq += (v - net_bb_mean) * (v - net_bb_mean);
+        net_bb_std = std::sqrt(sq / nn);
+        net_bb_p50 = all_net_hpwls[nn / 2];
+        net_bb_p90 = all_net_hpwls[std::min(nn - 1, (size_t)(nn * 0.90))];
+        net_bb_p99 = all_net_hpwls[std::min(nn - 1, (size_t)(nn * 0.99))];
+        net_bb_max = all_net_hpwls.back();
+    }
+
+    auto t_checkpoint_end = std::chrono::steady_clock::now();
+    double checkpoint_ms = std::chrono::duration<double, std::milli>(t_checkpoint_end - t_checkpoint_start).count();
+
+    // Write CSV with same header as full checkpoint, zeros for timing/FG columns
+    bool write_header = false;
+    {
+        FILE* test = fopen(output_path.c_str(), "r");
+        if (!test) {
+            write_header = true;
+        } else {
+            fclose(test);
+        }
+    }
+
+    FILE* fp = fopen(output_path.c_str(), "a");
+    if (!fp) {
+        VTR_LOG_ERROR("PROXY_CHECKPOINT_GEO: Cannot open %s for writing\n", output_path.c_str());
+        return;
+    }
+
+    if (write_header) {
+        fprintf(fp, "iteration,"
+            "pre_route_cpd,"
+            "bb_cost,timing_cost,total_cost,bb_cost_norm,timing_cost_norm,"
+            "bb_cost_delta,timing_cost_delta,pre_route_cpd_delta,"
+            "net_bb_mean,net_bb_p50,net_bb_p90,net_bb_p99,net_bb_max,net_bb_std,"
+            "num_crit_nets,num_crit_conns,"
+            "uplift_weighted_bb,crit_weighted_bb,"
+            "high_uplift_mean_bb,low_uplift_mean_bb,"
+            "uplift_bb_pearson,"
+            "mean_crit_uplift,"
+            "activated_mass_1pct,activated_mass_2pct,activated_mass_5pct,activated_mass_10pct,"
+            "reconvergence_pressure_1,reconvergence_pressure_2,reconvergence_pressure_5,reconvergence_pressure_10,"
+            "tight_competition_fraction_1,tight_competition_fraction_2,tight_competition_fraction_5,tight_competition_fraction_10,"
+            "uplift_drift_mean,uplift_drift_field,"
+            "num_edges_scored,num_timing_nodes,num_multiinput_nodes,"
+            "sum_positive_uplift,max_arrival_global,mean_arrival_global,"
+            "activated_mass_1_valid,activated_mass_2_valid,activated_mass_5_valid,activated_mass_10_valid,"
+            "tight_competition_fraction_1_valid,tight_competition_fraction_2_valid,tight_competition_fraction_5_valid,tight_competition_fraction_10_valid,"
+            "reconvergence_pressure_1_valid,reconvergence_pressure_2_valid,reconvergence_pressure_5_valid,reconvergence_pressure_10_valid,"
+            "activated_mass_monotonic_flag,reconvergence_pressure_monotonic_flag,tight_competition_monotonic_flag,"
+            "uplift_drift_nullability_flag,uplift_drift_nonnegative_flag,"
+            "sum_positive_uplift_zero_flag,"
+            "row_valid_flag,"
+            "checkpoint_compute_ms\n");
+    }
+
+    // Write row: geometry columns have real values, all timing/FG columns are 0
+    fprintf(fp, "%d,"
+        "0,"                                             // pre_route_cpd
+        "%.9g,0,0,0,0,"                                 // bb_cost, timing_cost, total_cost, bb_cost_norm, timing_cost_norm
+        "0,0,0,"                                         // deltas
+        "%.9g,%.9g,%.9g,%.9g,%.9g,%.9g,"                // net_bb stats
+        "0,0,"                                           // num_crit_nets, num_crit_conns
+        "0,0,"                                           // uplift_weighted_bb, crit_weighted_bb
+        "0,0,"                                           // high_uplift_mean_bb, low_uplift_mean_bb
+        "0,"                                             // uplift_bb_pearson
+        "0,"                                             // mean_crit_uplift
+        ",,,,"                                           // activated_mass 1,2,5,10 (NULL)
+        "0,0,0,0,"                                       // reconvergence_pressure
+        "0,0,0,0,"                                       // tight_competition_fraction
+        ",,"                                             // uplift_drift (NULL)
+        "0,0,0,"                                         // num_edges_scored, num_timing_nodes, num_multiinput_nodes
+        "0,0,0,"                                         // sum_positive_uplift, max_arrival_global, mean_arrival_global
+        "1,1,1,1,"                                       // am valid flags
+        "1,1,1,1,"                                       // tcf valid flags
+        "1,1,1,1,"                                       // rp valid flags
+        "1,1,1,"                                         // monotonic flags
+        "1,1,"                                           // drift flags
+        "1,"                                             // sum_positive_uplift_zero_flag
+        "1,"                                             // row_valid_flag
+        "%.3f\n",
+        iteration,
+        bb_cost,
+        net_bb_mean, net_bb_p50, net_bb_p90, net_bb_p99, net_bb_max, net_bb_std,
+        checkpoint_ms);
+
+    fclose(fp);
+
+    VTR_LOG("PROXY_CHECKPOINT_GEO: iter=%d nets=%zu net_bb_std=%.4f net_bb_p90=%.4f bb_cost=%.4f compute_ms=%.3f\n",
+            iteration, nn, net_bb_std, net_bb_p90, bb_cost, checkpoint_ms);
 }

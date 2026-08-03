@@ -1,116 +1,102 @@
 #!/usr/bin/env python3
-import subprocess
-import re
-import argparse
-import os
-import sys
-import statistics
+"""
+search64_mcnc_audit.py  —  MCNC-20 audit using our VPR build (Search-64 engine)
+
+Usage:
+  python3 search64_mcnc_audit.py                      # all 20 benchmarks
+  python3 search64_mcnc_audit.py -alu4 -clma -pdc     # subset via flags
+  python3 search64_mcnc_audit.py alu4 clma pdc        # subset via positional args
+  python3 search64_mcnc_audit.py -seeds 4 -alu4       # fewer baseline seeds
+"""
+import subprocess, re, os, statistics, argparse
 from tqdm import tqdm
 
-# MCNC-20 Benchmark Suite
+VPR  = "./build/vpr/vpr"
+ARCH = "vtr_flow/arch/timing/k6_frac_N10_mem32K_40nm.xml"
+DIR  = "vtr_flow/benchmarks/blif/6"
+
 MCNC_20 = [
     "alu4", "apex2", "apex4", "bigkey", "clma", "des", "diffeq", "dsip",
     "elliptic", "ex1010", "ex5p", "frisc", "misex3", "pdc", "s298",
     "s38417", "s38584.1", "seq", "spla", "tseng"
 ]
 
-# Configuration
-NUM_SEEDS = 16
-VPR_BIN = "./vpr/vpr"
-ARCH = "vtr_flow/arch/timing/k6_frac_N10_mem32K_40nm.xml"
-BLIF_DIR = "vtr_flow/benchmarks/blif/6"
+def parse_cpd(text):
+    # autonomous winner
+    m = re.search(r"WINNER: Worker \d+, CPD=([\d.]+)\s*ns", text)
+    if m: return float(m.group(1))
+    # standard
+    m = re.search(r"Final critical path delay \(least slack\):\s+([\d.]+)\s+ns", text)
+    return float(m.group(1)) if m else None
 
-def run_vpr(benchmark, autonomous=False, seed=1):
-    blif_path = os.path.join(BLIF_DIR, f"{benchmark}.blif")
-    if not os.path.exists(blif_path):
-        return None, f"BLIF not found: {blif_path}"
-
-    cmd = [
-        VPR_BIN, ARCH, blif_path,
-        "--route_chan_width", "100",
-        "--disp", "off",
-        "--seed", str(seed)
-    ]
+def run(bench, seed=1, autonomous=False):
+    blif = f"{DIR}/{bench}.blif"
+    cmd  = [VPR, ARCH, blif, "--route_chan_width", "100",
+            "--disp", "off", "--seed", str(seed)]
     if autonomous:
         cmd += ["--autonomous", "on"]
-
-    try:
-        process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-        output = ""
-        for line in process.stdout:
-            output += line
-        process.wait()
-
-        # Parse CPD (support both standard and autonomous formats)
-        m_winner = re.search(r"WINNER: Worker \d+, CPD=([\d.]+)\s+ns", output)
-        m_final = re.search(r"Final critical path delay \(least slack\):\s+([\d.]+)\s+ns", output)
-        
-        if m_winner:
-            return float(m_winner.group(1)), None
-        elif m_final:
-            return float(m_final.group(1)), None
-        else:
-            return None, "CPD not found in output"
-    except Exception as e:
-        return None, str(e)
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    return parse_cpd(r.stdout + r.stderr)
 
 def main():
-    parser = argparse.ArgumentParser(description="Search-64 MCNC Audit Script")
-    parser.add_argument("benchmarks", nargs="*", help="Specific benchmarks to run (e.g., alu4 clma pdc). If empty, runs all.")
-    parser.add_argument("--seeds", type=int, default=16, help="Number of baseline seeds (default 16)")
-    args = parser.parse_args()
+    p = argparse.ArgumentParser()
+    p.add_argument("-seeds", type=int, default=16)
+    p.add_argument("pos_benchmarks", nargs="*", help="Benchmarks via positional args")
+    for b in MCNC_20:
+        p.add_argument(f"-{b.replace('.','_')}", action="store_true")
+    args = p.parse_args()
 
-    targets = args.benchmarks if args.benchmarks else MCNC_20
-    num_seeds = args.seeds
+    # Collect targets from both positional and flags
+    targets = []
+    # from flags
+    for b in MCNC_20:
+        if getattr(args, b.replace('.','_'), False):
+            targets.append(b)
+    # from positional
+    for b in args.pos_benchmarks:
+        if b in MCNC_20 and b not in targets:
+            targets.append(b)
     
+    if not targets:
+        targets = MCNC_20
+
     print("=" * 72)
-    print(f"Search-64 MCNC Audit  |  BASE=avg of {num_seeds} seeds  AUTO=engine best")
-    print(f"  Targets: {', '.join(targets) if len(targets) <= 5 else len(targets)}")
+    print(f"MCNC Search-64 Audit  |  {args.seeds} seeds baseline")
+    print(f"Benchmarks: {', '.join(targets) if len(targets) <= 5 else str(len(targets)) + ' benchmarks'}")
     print("=" * 72)
 
-    data = {}
-    
+    rows = []
     for bench in targets:
-        print(f"\n[{bench}]")
-        
-        # 1. Baseline Sweep
-        base_results = []
-        pbar_base = tqdm(range(1, num_seeds + 1), desc=f"  Base Sweep", leave=False, unit="seed")
-        for s in pbar_base:
-            cpd, err = run_vpr(bench, autonomous=False, seed=s)
-            if cpd:
-                base_results.append(cpd)
-            else:
-                tqdm.write(f"    Seed {s} FAILED: {err}")
-        
-        avg_base = statistics.mean(base_results) if base_results else None
-        
-        # 2. Search-64 Run
-        print(f"  Running Search-64 Autonomous Tournament...", end="", flush=True)
-        auto_cpd, err = run_vpr(bench, autonomous=True, seed=1)
-        if auto_cpd:
-            print(f" Done: {auto_cpd:.4f} ns")
-        else:
-            print(f" FAILED: {err}")
+        if not os.path.exists(f"{DIR}/{bench}.blif"):
+            print(f"  SKIP {bench}: BLIF not found"); continue
 
-        if avg_base and auto_cpd:
-            gain = (1.0 - auto_cpd / avg_base) * 100.0
-            tqdm.write(f"  RESULT: Base Avg={avg_base:.4f} ns, Auto={auto_cpd:.4f} ns, Gain={gain:+.2f}%")
-            data[bench] = (avg_base, auto_cpd, gain)
-        else:
-            data[bench] = (avg_base, auto_cpd, None)
+        vals = []
+        bar = tqdm(range(1, args.seeds+1), desc=f"  {bench:<13}", unit="seed", leave=True)
+        for s in bar:
+            cpd = run(bench, seed=s)
+            if cpd: vals.append(cpd); bar.set_postfix({"cpd": f"{cpd:.4f}"})
 
-    # Summary Table
+        avg  = statistics.mean(vals) if vals else None
+        best = min(vals) if vals else None
+        tqdm.write(f"  [BASE] {bench:<13}: avg={avg:.4f} ns  best={best:.4f} ns" if avg else f"  [FAIL] {bench}")
+
+        tqdm.write(f"  [S64 ] Running Search-64...")
+        auto = run(bench, seed=1, autonomous=True)
+        if auto and avg:
+            gain = (1 - auto/avg)*100
+            tag  = "✅" if gain > 1 else "❌"
+            tqdm.write(f"  [S64 ] {bench:<13}: {auto:.4f} ns  gain={gain:+.2f}% {tag}")
+        rows.append((bench, avg, best, auto))
+
     print("\n" + "=" * 72)
-    print(f"  {'Benchmark':<15} {'Base Avg':>10} {'Auto Best':>10} {'Gain':>10}   Result")
+    print(f"  {'Benchmark':<14} {'Base Avg':>9} {'Base Best':>10} {'Search-64':>10} {'Gain':>8}")
     print("  " + "-" * 68)
-    for bench in targets:
-        avg_b, auto, gain = data[bench]
-        if avg_b and auto:
-            tag = "✅ GAIN" if gain > 1.0 else ("❌ REGRESS" if gain < -1.0 else "➡️  NEUTRAL")
-            print(f"  {bench:<15} {avg_b:>10.4f} {auto:>10.4f} {gain:>+9.2f}%   {tag}")
-        else:
-            print(f"  {bench:<15} {'FAIL':>10} {'FAIL':>10} {'N/A':>10}")
+    for b, avg, best, auto in rows:
+        if avg and auto:
+            gain = (1 - auto/avg)*100
+            print(f"  {b:<14} {avg:>9.4f} {best:>10.4f} {auto:>10.4f} {gain:>+7.2f}%")
+        elif avg:
+            print(f"  {b:<14} {avg:>9.4f} {best:>10.4f} {'FAIL':>10}")
     print("=" * 72)
 
 if __name__ == "__main__":

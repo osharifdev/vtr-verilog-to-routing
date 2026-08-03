@@ -1327,9 +1327,11 @@ static void instantiate_variable_shift(nnode_t* node, operation_list type, short
     output_pins = input_pins;
     output_port_width = node->output_port_sizes[0];
     input_port_width = node->input_port_sizes[0];
-    muxes = (nnode_t***)vtr::malloc(sizeof(nnode_t**) * (input_port_width));
+    int shift_port_width = node->input_port_sizes[1];
 
-    for (int i = 0; i < input_port_width; i++) {
+    muxes = (nnode_t***)vtr::malloc(sizeof(nnode_t**) * (shift_port_width));
+
+    for (int i = 0; i < shift_port_width; i++) {
         muxes[i] = (nnode_t**)vtr::malloc(sizeof(nnode_t*) * (input_port_width));
         for (int j = 0; j < input_port_width; j++) {
             muxes[i][j] = make_2port_gate(SMUX_2, 1, 2, 1, node, mark);
@@ -1338,7 +1340,7 @@ static void instantiate_variable_shift(nnode_t* node, operation_list type, short
         }
     }
 
-    for (int i = 0; i < input_port_width; i++) {
+    for (int i = 0; i < shift_port_width; i++) {
         pow_2_by_i = shift_left_value_with_overflow_check(0x1, i, node->loc);
         /*
          * Limit shift value of barrel design to max at input_port_width,
@@ -1404,7 +1406,7 @@ static void instantiate_variable_shift(nnode_t* node, operation_list type, short
         output_pins = init_signal_list();
         // Connect output pin to related input pin
         for (int j = 0; j < input_port_width; j++) {
-            if (i != input_port_width - 1) {
+            if (i != shift_port_width - 1) {
                 npin_t* new_pin1 = allocate_npin();
                 npin_t* new_pin2 = allocate_npin();
                 nnet_t* new_net = allocate_nnet();
@@ -1427,7 +1429,7 @@ static void instantiate_variable_shift(nnode_t* node, operation_list type, short
     }
 
     free_signal_list(output_pins);
-    for (int i = 0; i < input_port_width; i++) {
+    for (int i = 0; i < shift_port_width; i++) {
         vtr::free(muxes[i]);
     }
     vtr::free(muxes);

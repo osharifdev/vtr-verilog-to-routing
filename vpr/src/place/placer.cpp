@@ -118,9 +118,29 @@ Placer::Placer(const Netlist<>& net_list,
 
     // Gets initial cost and loads bounding boxes.
     std::tie(costs_.bb_cost, std::ignore, costs_.congestion_cost) = net_cost_handler_.comp_bb_cong_cost(e_cost_methods::NORMAL);
+    VTR_LOG("[V0_DIAG] after_comp_bb_cong: bb_cost=%.15g seed=%d\n", costs_.bb_cost, placer_opts.seed);
 
-    if (placer_opts.place_algorithm.is_timing_driven()) {
+    // PROXY 1.3: Geometry-only checkpoint — emit right after initial_placement and exit
+    if (placer_opts.proxy_checkpoint_enable
+        && placer_opts.proxy_checkpoint_level >= 3
+        && placer_opts.proxy_checkpoint_stop_after >= 0
+        && !placer_opts.proxy_checkpoint_output.empty()) {
+        VTR_LOG("PROXY 1.3: Emitting geometry-only checkpoint and exiting.\n");
+        emit_geometry_only_proxy_checkpoint(0, placer_state_, placer_opts.proxy_checkpoint_output, costs_.bb_cost);
+        std::exit(0);
+    }
+
+    // PROXY 1.2: Skip timing initialization when level >= 2
+    bool proxy_skip_timing = (placer_opts.proxy_checkpoint_enable
+                               && placer_opts.proxy_checkpoint_level >= 2
+                               && placer_opts.proxy_checkpoint_stop_after >= 0);
+
+    if (placer_opts.place_algorithm.is_timing_driven() && !proxy_skip_timing) {
         alloc_and_init_timing_objects_(net_list, analysis_opts);
+        VTR_LOG("[V0_DIAG] after_alloc_timing: timing_cost=%.15g seed=%d\n", costs_.timing_cost, placer_opts.seed);
+    } else if (proxy_skip_timing) {
+        VTR_LOG("PROXY 1.2: Skipping timing initialization (level=%d)\n", placer_opts.proxy_checkpoint_level);
+        costs_.timing_cost = 0.0;
     } else {
         VTR_ASSERT(placer_opts.place_algorithm == e_place_algorithm::BOUNDING_BOX_PLACE);
         // Timing cost is not used
@@ -128,6 +148,8 @@ Placer::Placer(const Netlist<>& net_list,
     }
 
     costs_.update_norm_factors();
+    VTR_LOG("[V0_DIAG] after_update_norm: bb_cost=%.15g bb_cost_norm=%.15g seed=%d\n",
+            costs_.bb_cost, costs_.bb_cost_norm, placer_opts.seed);
 
     if (noc_opts.noc) {
         VTR_ASSERT(noc_cost_handler_.has_value());
@@ -145,15 +167,31 @@ Placer::Placer(const Netlist<>& net_list,
     costs_.cost = costs_.get_total_cost(placer_opts, noc_opts);
 
     // Sanity check that initial placement is legal
+    // PROXY 1.2: Skip timing cost check and exit before annealer construction
+    if (proxy_skip_timing) {
+        if (!placer_opts.proxy_checkpoint_output.empty()) {
+            VTR_LOG("PROXY 1.2: Emitting geometry-only checkpoint and exiting.\n");
+            emit_geometry_only_proxy_checkpoint(0, placer_state_, placer_opts.proxy_checkpoint_output, costs_.bb_cost);
+            std::exit(0);
+        }
+    }
+
     check_place_();
 
     log_printer_.print_initial_placement_stats();
+
+    // V0_COST_PRE_SA: Deterministic cost snapshot BEFORE PlacementAnnealer is constructed.
+    VTR_LOG("[V0_COST_PRE_SA] bb_cost=%.15g timing_cost=%.15g total_cost=%.15g seed=%d\n",
+            costs_.bb_cost, costs_.timing_cost, costs_.cost, placer_opts.seed);
 
     annealer_ = std::make_unique<PlacementAnnealer>(placer_opts_, placer_state_, place_macros, costs_, net_cost_handler_, noc_cost_handler_,
                                                     noc_opts_, rng_, std::move(move_generator), std::move(move_generator2), place_delay_model_.get(),
                                                     placer_criticalities_.get(), placer_setup_slacks_.get(), timing_info_.get(), pin_timing_invalidator_.get(),
                                                     anneal_auto_init_t_scale,
                                                     move_lim);
+    // NOTE: PlacementAnnealer constructor runs seed-dependent temperature estimation
+    // (annealer.cpp ~line 279) which consumes rng_ and modifies costs_ via trial moves.
+    // Any cost print AFTER this point reflects post-temp-estimation state.
 }
 
 void Placer::alloc_and_init_timing_objects_(const Netlist<>& net_list,
@@ -203,6 +241,7 @@ void Placer::alloc_and_init_timing_objects_(const Netlist<>& net_list,
     crit_params.prob_beta = placer_opts_.prob_timing_beta;
     crit_params.prob_self_calibrate = placer_opts_.prob_self_calibrate;
     crit_params.prob_congestion_gamma = placer_opts_.prob_congestion_gamma;
+    crit_params.prob_uplift_congestion_gamma = placer_opts_.prob_uplift_congestion_gamma;
     crit_params.prob_schedule_ramp = placer_opts_.prob_schedule_ramp;
     crit_params.prob_dist_func = placer_opts_.prob_dist_func;
     crit_params.prob_dist_threshold = placer_opts_.prob_dist_threshold;
@@ -310,14 +349,58 @@ void Placer::place() {
     bool analytic_place_enabled = false;
 
     if (!analytic_place_enabled && !quench_only_) {
+        VTR_LOG("[V0_FLOW] annealing started\n");
+        // COST_POST_TEMP_EST: costs_ AFTER PlacementAnnealer constructor ran temperature estimation.
+        // This reflects seed-dependent trial moves. Compare with V0_COST_PRE_SA to prove contamination.
+        VTR_LOG("[COST_POST_TEMP_EST] bb_cost=%.15g timing_cost=%.15g total_cost=%.15g\n",
+                costs_.bb_cost, costs_.timing_cost, costs_.cost);
+
         // Table header
         log_printer_.print_place_status_header();
 
+        int anneal_iter = 0;
+        VTR_LOG("[V0_AUDIT_PHASE2] Entry to annealer.\n");
         // Outer loop of the simulated annealing begins
         do {
             vtr::Timer temperature_timer;
 
             annealer_->outer_loop_update_timing_info();
+
+            // Factor-graph proxy checkpoint instrumentation
+            if (placer_opts_.proxy_checkpoint_enable
+                && !placer_opts_.proxy_checkpoint_output.empty()
+                && anneal_iter <= 3) {
+                if (placer_opts_.prob_timing_enable) {
+                    // Full timing + geometry checkpoint (PROXY 1.0 / 1.1 in COW mode)
+                    emit_factor_graph_proxy_checkpoint(
+                        anneal_iter,
+                        timing_info_.get(),
+                        placer_criticalities_.get(),
+                        placer_state_,
+                        placer_opts_,
+                        placer_opts_.proxy_checkpoint_output,
+                        costs_.bb_cost,
+                        costs_.timing_cost,
+                        costs_.cost,
+                        costs_.bb_cost_norm,
+                        costs_.timing_cost_norm);
+                } else {
+                    // Geometry-only checkpoint (standalone PROXY 1.0 / 1.1 mode without prob_timing)
+                    emit_geometry_only_proxy_checkpoint(
+                        anneal_iter,
+                        placer_state_,
+                        placer_opts_.proxy_checkpoint_output,
+                        costs_.bb_cost);
+                }
+
+                // Early exit if requested — skip quench and routing entirely
+                if (placer_opts_.proxy_checkpoint_stop_after >= 0
+                    && anneal_iter >= placer_opts_.proxy_checkpoint_stop_after) {
+                    VTR_LOG("PROXY_CHECKPOINT: Collected iterations 0-%d. Exiting VPR early (no routing).\n",
+                            anneal_iter);
+                    std::exit(0);
+                }
+            }
 
             if (placer_opts_.place_algorithm.is_timing_driven()) {
                 critical_path_ = timing_info_->least_slack_critical_path();
@@ -333,16 +416,30 @@ void Placer::place() {
             // do a complete inner loop iteration
             annealer_->placement_inner_loop();
 
+            if (anneal_iter == 0) {
+                VTR_LOG("[V0_AUDIT_PHASE2] First temperature iteration complete.\n");
+            }
+            anneal_iter++;
+
             log_printer_.print_place_status(temperature_timer.elapsed_sec());
 
             // Outer loop of the simulated annealing ends
         } while (annealer_->outer_loop_update_state());
+
+        const auto& swap_stats = std::get<0>(annealer_->get_stats());
+        int moves_attempted = swap_stats.num_swap_accepted + swap_stats.num_swap_rejected + swap_stats.num_swap_aborted;
+        int moves_accepted = swap_stats.num_swap_accepted;
+        VTR_LOG("[V0_AUDIT_PHASE2] Total moves attempted: %d\n", moves_attempted);
+        VTR_LOG("[V0_AUDIT_PHASE2] Total moves accepted: %d\n", moves_accepted);
+        VTR_LOG("[V0_AUDIT_PHASE2] Final placement cost before routing: %e\n", costs_.cost);
+
+        VTR_LOG("[V0_FLOW] annealing completed\n");
     } // skip_anneal ends
 
     // Start Quench
     annealer_->start_quench();
 
-    pre_quench_timing_stats_ = timing_ctx.stats;
+    pre_quench_timing_stats_ = g_vpr_ctx.timing().stats;
     { // Quench
         vtr::ScopedFinishTimer temperature_timer("Placement Quench");
 
@@ -372,6 +469,7 @@ void Placer::place() {
     crit_params.prob_beta = placer_opts_.prob_timing_beta;
     crit_params.prob_self_calibrate = placer_opts_.prob_self_calibrate;
     crit_params.prob_congestion_gamma = placer_opts_.prob_congestion_gamma;
+    crit_params.prob_uplift_congestion_gamma = placer_opts_.prob_uplift_congestion_gamma;
     crit_params.prob_schedule_ramp = placer_opts_.prob_schedule_ramp;
     crit_params.prob_dist_func = placer_opts_.prob_dist_func;
     crit_params.prob_dist_threshold = placer_opts_.prob_dist_threshold;

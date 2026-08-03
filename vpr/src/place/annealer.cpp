@@ -519,6 +519,8 @@ t_swap_result PlacementAnnealer::try_swap_(MoveGenerator& move_generator,
                                 placer_opts_.prob_timing_beta,   // beta
                                 placer_opts_.prob_self_calibrate,
                                 placer_opts_.prob_congestion_gamma,
+                                placer_opts_.prob_routing_penalty_gamma,
+                                        placer_opts_.prob_uplift_congestion_gamma,
                                 placer_opts_.prob_schedule_ramp,
                                 placer_opts_.prob_dist_func,
                                 placer_opts_.prob_dist_threshold,
@@ -837,6 +839,8 @@ void PlacementAnnealer::outer_loop_update_timing_info() {
                                         placer_opts_.prob_timing_beta,
                                         placer_opts_.prob_self_calibrate,
                                         placer_opts_.prob_congestion_gamma,
+                                        placer_opts_.prob_routing_penalty_gamma,
+                                        placer_opts_.prob_uplift_congestion_gamma,
                                         placer_opts_.prob_schedule_ramp,
                                         placer_opts_.prob_dist_func,
                                         placer_opts_.prob_dist_threshold,
@@ -954,6 +958,8 @@ void PlacementAnnealer::placement_inner_loop() {
                                             placer_opts_.prob_timing_beta,
                                             placer_opts_.prob_self_calibrate,
                                             placer_opts_.prob_congestion_gamma,
+                                            placer_opts_.prob_routing_penalty_gamma,
+                                        placer_opts_.prob_uplift_congestion_gamma,
                                             placer_opts_.prob_schedule_ramp,
                                             placer_opts_.prob_dist_func,
                                             placer_opts_.prob_dist_threshold,
@@ -1001,6 +1007,10 @@ void PlacementAnnealer::placement_inner_loop() {
             ++inner_placement_save_count;
         }
     }
+
+    VTR_LOG("[V0_FLOW] moves_attempted=%d moves_accepted=%d\n", 
+           (int)swap_stats_.num_swap_accepted + (int)swap_stats_.num_swap_rejected,
+           (int)swap_stats_.num_swap_accepted);
 
 #ifdef VPR_USE_SIGACTION
     // Save the block locations after each inner loop for checkpointing.

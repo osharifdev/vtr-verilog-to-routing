@@ -1024,7 +1024,11 @@ struct t_placer_opts {
     float prob_inject_lambda;
     std::string prob_inject_scale_mode;
     bool prob_self_calibrate;    // [PHASE 7] Auto-set alpha/lambda
-    float prob_congestion_gamma; // [PHASE 7] Congestion-aware variance inflation
+    float prob_congestion_gamma; // [PHASE 7] Option A: Congestion-aware variance inflation in factor graph
+    float prob_routing_penalty_gamma; // Option B: Routing penalty mean shift in factor graph
+    float prob_timing_beta2;          // Fanout-aware edge variance: σ² *= (1 + β₂ × log(fanout))
+    float prob_timing_beta3;          // Aspect ratio edge variance
+    float prob_uplift_congestion_gamma; // Option C: Post-hoc uplift scaling by congestion
     bool prob_schedule_ramp;     // [PHASE 7] Temperature-based lambda ramping
     
     e_prob_dist_func prob_dist_func; // Function shape for distance scaling
@@ -1180,6 +1184,20 @@ struct t_placer_opts {
     float place_auto_init_t_scale;
 
     e_anneal_init_t_estimator anneal_init_t_estimator;
+
+    /// V0 deterministic placement options
+    bool v0_enable = false;
+    int v0_macro_mode = 0;
+    std::string v0_ordering_mode = "native";
+    bool v0_debug = false;
+    int prob_config_id = -1;
+    std::string v0_log;
+    std::string sweep_csv;
+
+    bool proxy_checkpoint_enable = false;
+    std::string proxy_checkpoint_output;
+    int proxy_checkpoint_stop_after = -1;
+    int proxy_checkpoint_level = 0;  // 0=full (PROXY 1.0), 1=skip RR+lookahead, 2=skip delta delay+STA, 3=geometry-only
 };
 
 /******************************************************************

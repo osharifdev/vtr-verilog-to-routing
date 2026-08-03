@@ -494,23 +494,34 @@ void combine_nets_with_spot_copy(nnet_t* output_net, nnet_t* input_net, long sc_
  * TODO: improve error message
  *-------------------------------------------------------------------------------------------*/
 void join_nets(nnet_t* join_to_net, nnet_t* other_net) {
+    if (join_to_net == NULL || other_net == NULL) return;
     if (join_to_net == other_net) {
-        for (int i = 0; i < join_to_net->num_driver_pins; i++) {
-            const char* pin_name = join_to_net->driver_pins[i]->name ? join_to_net->driver_pins[i]->name : "unknown";
-            if ((join_to_net->driver_pins[i]->node != NULL))
-                warning_message(NETLIST, join_to_net->driver_pins[i]->node->loc, "%s %s\n", "Combinational loop with driver pin", pin_name);
-            else
-                warning_message(NETLIST, unknown_location, "%s %s\n", "Combinational loop with driver pin", pin_name);
+        static int loop_warning_count = 0;
+        if (loop_warning_count++ < 100) {
+            if (join_to_net->driver_pins) {
+                for (int i = 0; i < join_to_net->num_driver_pins; i++) {
+                    if (join_to_net->driver_pins[i]) {
+                        const char* pin_name = join_to_net->driver_pins[i]->name ? join_to_net->driver_pins[i]->name : "unknown";
+                        warning_message(NETLIST, join_to_net->driver_pins[i]->node ? join_to_net->driver_pins[i]->node->loc : unknown_location, 
+                                        "Combinational loop with driver pin %s\n", pin_name);
+                    }
+                }
+            }
+            if (join_to_net->fanout_pins) {
+                for (int i = 0; i < join_to_net->num_fanout_pins; i++) {
+                    if (join_to_net->fanout_pins[i]) {
+                        const char* pin_name = join_to_net->fanout_pins[i]->name ? join_to_net->fanout_pins[i]->name : "unknown";
+                        warning_message(NETLIST, join_to_net->fanout_pins[i]->node ? join_to_net->fanout_pins[i]->node->loc : unknown_location,
+                                        "Combinational loop with fanout pin %s\n", pin_name);
+                    }
+                }
+            }
+            warning_message(NETLIST, unknown_location, "%s", "Found a combinational loop - proceeding anyway\n");
+            if (loop_warning_count == 100) {
+                warning_message(NETLIST, unknown_location, "%s", "Further combinational loop warnings suppressed for this net join.\n");
+            }
         }
-        for (int i = 0; i < join_to_net->num_fanout_pins; i++) {
-            const char* pin_name = join_to_net->fanout_pins[i]->name ? join_to_net->fanout_pins[i]->name : "unknown";
-            if ((join_to_net->fanout_pins[i] != NULL) && (join_to_net->fanout_pins[i]->node != NULL))
-                warning_message(NETLIST, join_to_net->fanout_pins[i]->node->loc, "%s %s\n", "Combinational loop with fanout pin", pin_name);
-            else
-                warning_message(NETLIST, unknown_location, "%s %s\n", "Combinational loop with fanout pin", pin_name);
-        }
-
-        error_message(NETLIST, unknown_location, "%s", "Found a combinational loop");
+        return;
     } else if (other_net->num_driver_pins > 1) {
         if (other_net->name && join_to_net->name)
             error_message(NETLIST, unknown_location, "Tried to join net %s to %s but this would lose %d drivers for net %s", other_net->name, join_to_net->name, other_net->num_driver_pins - 1, other_net->name);
@@ -518,10 +529,21 @@ void join_nets(nnet_t* join_to_net, nnet_t* other_net) {
             error_message(NETLIST, unknown_location, "Tried to join nets but this would lose %d drivers", other_net->num_driver_pins - 1);
     }
 
-    /* copy the driver over to the new_net */
-    for (int i = 0; i < other_net->num_fanout_pins; i++) {
-        if (other_net->fanout_pins[i]) {
-            add_fanout_pin_to_net(join_to_net, other_net->fanout_pins[i]);
+    /* copy the drivers over to the new_net */
+    if (other_net->driver_pins) {
+        for (int i = 0; i < other_net->num_driver_pins; i++) {
+            if (other_net->driver_pins[i]) {
+                add_driver_pin_to_net(join_to_net, other_net->driver_pins[i]);
+            }
+        }
+    }
+
+    /* copy the fanouts over to the new_net */
+    if (other_net->fanout_pins) {
+        for (int i = 0; i < other_net->num_fanout_pins; i++) {
+            if (other_net->fanout_pins[i]) {
+                add_fanout_pin_to_net(join_to_net, other_net->fanout_pins[i]);
+            }
         }
     }
 

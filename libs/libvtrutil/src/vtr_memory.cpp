@@ -63,7 +63,8 @@ void* realloc(void* ptr, size_t size) {
 
     ret = std::realloc(ptr, size);
     if (nullptr == ret && size != 0) {
-        throw VtrError(string_fmt("Unable to realloc memory (ptr=%p, size=%d).", ptr, size),
+        fprintf(stderr, "DEBUG: vtr::realloc failed! ptr=%p, size=%zu\n", ptr, size);
+        throw VtrError(string_fmt("Unable to realloc memory (ptr=%p, size=%zu).", ptr, size),
                        __FILE__, __LINE__);
     }
     return ret;

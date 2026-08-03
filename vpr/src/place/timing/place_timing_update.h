@@ -77,3 +77,40 @@ void commit_setup_slacks(const PlacerSetupSlacks* setup_slacks,
 ///@brief Verify that the values in `connection_setup_slack` matches PlacerSetupSlacks.
 bool verify_connection_setup_slacks(const PlacerSetupSlacks* setup_slacks,
                                     const PlacerState& placer_state);
+
+/**
+ * @brief Emits factor-graph proxy checkpoint metrics at early annealing iterations.
+ *
+ * Records mean criticality uplift, activated mass, reconvergence pressure,
+ * tight competition fraction, uplift drift, normalization context, and sanity
+ * checks at the specified annealing iteration. Appends one row to the CSV at
+ * output_path.
+ *
+ * Must be called AFTER perform_full_timing_update() so that g_fg_view and
+ * g_prob_differential_crit are populated.
+ */
+void emit_factor_graph_proxy_checkpoint(
+    int iteration,
+    SetupTimingInfo* timing_info,
+    const PlacerCriticalities* criticalities,
+    const PlacerState& placer_state,
+    const t_placer_opts& placer_opts,
+    const std::string& output_path,
+    double bb_cost = 0.0,
+    double timing_cost = 0.0,
+    double total_cost = 0.0,
+    double bb_cost_norm = 0.0,
+    double timing_cost_norm = 0.0);
+
+/**
+ * @brief Emits a geometry-only proxy checkpoint (PROXY 1.2/1.3).
+ *
+ * Computes only placement geometry features (net HPWL statistics)
+ * without requiring timing information, delay models, or factor graphs.
+ * All timing/FG columns are written as 0.
+ */
+void emit_geometry_only_proxy_checkpoint(
+    int iteration,
+    const PlacerState& placer_state,
+    const std::string& output_path,
+    double bb_cost = 0.0);

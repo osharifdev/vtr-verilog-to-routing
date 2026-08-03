@@ -1,131 +1,123 @@
-# Verilog to Routing (VTR)
-[![Gitpod Ready-to-Code](https://img.shields.io/badge/Gitpod-Ready--to--Code-blue?logo=gitpod)](https://gitpod.io/#https://github.com/verilog-to-routing/vtr-verilog-to-routing.git)
-[![Build Status](https://github.com/verilog-to-routing/vtr-verilog-to-routing/workflows/Test/badge.svg)](https://github.com/verilog-to-routing/vtr-verilog-to-routing/actions?query=workflow%3ATest) [![Documentation Status](https://readthedocs.org/projects/vtr/badge/?version=latest)](http://docs.verilogtorouting.org/en/latest/)
+# Probabilistic Early FPGA Timing Analysis
 
-## Introduction
-The Verilog-to-Routing (VTR) project is a world-wide collaborative effort to provide an open-source framework for conducting FPGA architecture and CAD research and development.
-The VTR design flow takes as input a Verilog description of a digital circuit, and a description of the target FPGA architecture.
-It then performs:
-  * Elaboration, Synthesis & Partial Mapping (PARMYS)
-  * Logic Optimization & Technology Mapping (ABC)
-  * Packing, Placement, Routing & Timing Analysis (VPR)
+A drop-in timing-evaluation layer for VTR which replaces deterministic max-based propagation
+during placement with a probabilistic formulation that models arrival times as random variables
+and approximates max operations using Gaussian moment matching, preserving multi-path
+competition.
 
-to generate FPGA speed and area results.
-VTR includes a set of benchmark designs known to work with the design flow.
+Early-stage FPGA timing analysis is inherently uncertain: routing is incomplete, congestion is
+only partially observed, and interconnect delays are coarsely estimated. Deterministic static
+timing analysis nevertheless enforces hard path selection at every node, discarding competing
+near-critical paths whose refined routing delays may later dominate. Retaining those alternatives
+as a distribution yields a criticality signal that is less sensitive to placement-time
+uncertainty and richer for optimization to act on.
 
-VTR can also produce [FASM](https://fasm.readthedocs.io/en/latest/) to program some commercial FPGAs (via [Symbiflow](https://chipsalliance.org/announcement/2022/02/18/chips-alliance-forms-f4pga-workgroup-to-accelerate-adoption-of-open-source-fpga-tooling/))
+The method augments prior placers rather than competing with them: it requires no modification to
+the placement algorithm and remains compatible with existing optimizers. Across the VTR 7.0
+benchmark suite it achieves a 6.05% geometric-mean reduction in critical path delay, reduces
+seed-dependent CPD variation by 60.9%, and incurs a 5.11% total-flow runtime overhead.
 
-| Placement (carry-chains highlighted) | Critical Path |
-| ------------------------------------ | ------------- |
-| <img src="https://verilogtorouting.org/img/des90_placement_macros.gif" width="350"/> | <img src="https://verilogtorouting.org/img/des90_cpd.gif" width="350"/> |
+> **When Timing is Uncertain, Infer: Probabilistic Early FPGA Timing Analysis for Robust
+> Critical Path Optimization**
+> Omar Sharif, Filip Wojcicki, Tarik Ourida, Wayne Luk, Christos-Savvas Bouganis
+> Imperial College London — ASAP 2026
 
-| Logical Connections | Routing Utilziation |
-| ------------------- | ------------------- |
-| <img src="https://verilogtorouting.org/img/des90_nets.gif" width="350"/> | <img src="https://verilogtorouting.org/img/des90_routing_util.gif" width="350"/> |
+## Method
 
+Deterministic STA propagates arrival times through the timing graph with a max operator, so each
+node commits to a single maximum-delay incoming path. During early placement routing is
+incomplete, several incoming paths can be close relative to the uncertainty in their delay
+estimates, and a small perturbation flips the max-selected predecessor — suppressing
+near-critical alternatives whose refined routing delays may later dominate.
 
-## Documentation
-VTR's [full documentation](https://docs.verilogtorouting.org) includes tutorials, descriptions of the VTR design flow, and tool options.
+Arrival times and edge delays are instead modelled as random variables, giving candidate arrival
+`X_u(v)` from each predecessor `u`:
 
-Also check out our [additional support resources](SUPPORT.md).
-
-## License
-Generally most code is under MIT license, with the exception of ABC which is distributed under its own (permissive) terms.
-See the [full license](LICENSE.md) for details.
-
-## How to Cite
-The following paper may be used as a general citation for VTR:
-
-M. A. Elgammal, A. Mohaghegh, S. G. Shahrouz, F. Mahmoudi, F. Kosar, K. Talaei, J. Fife, D. Khadivi, K. Murray, A. Boutros, K. B. Kent, J. Goeders, and V. Betz "VTR 9: Open-Source CAD for Fabric and Beyond FPGA Architecture Exploration", ACM TRETS, 2025. [PDF](https://dl.acm.org/doi/epdf/10.1145/3734798)
-
-Bibtex:
 ```
-@article{vtr9,
-  title={VTR 9: Open-Source CAD for Fabric and Beyond FPGA Architecture Exploration},
-  author={Elgammal, Mohamed A. and Mohaghegh, Amin and Shahrouz, Soheil G. and Mahmoudi, Fatemehsadat and Kosar, Fahrican and Talaei, Kimia and Fife, Joshua and Khadivi, Daniel and Murray, Kevin and Boutros, Andrew and Kent, Kenneth B. and Goeders, Jeff and Betz, Vaughn},
-  journal={ACM Trans. Reconfigurable Technol. Syst.},
-  year={2025}
-}
+A(v) ~ N(μ_v, σ²_v)      d(u,v) ~ N(μ_uv, σ²_uv)      X_u(v) = A(u) + d(u,v)
 ```
 
-## Download
-For most users of VTR (rather than active developers) you should download the [latest official VTR release](https://verilogtorouting.org/download), which has been fully regression tested.
+`μ_uv` is the placement-time interconnect delay estimate used by VPR. `σ²_uv` is a proxy for
+pre-routing uncertainty, not a calibrated process-variation model.
 
-## Building
-On unix-like systems run `make` from the root VTR directory.
+Reconvergence factors `A(v) = max_u X_u(v)` are approximated by Gaussian moment matching:
 
-For more details see the [building instructions](BUILDING.md).
+```
+μ_v = μ₁Φ(α) + μ₂Φ(−α) + σφ(α),    α = (μ₁ − μ₂)/σ,    σ = √(σ₁² + σ₂²)
+```
 
-#### Docker
-We provide a Dockerfile that sets up all the necessary packages for VTR to run.
-For more details see [here](dev/DOCKER_DEPLOY.md).
+A node with `k` incoming candidates requires `k−1` pairwise updates and stores only constant-size
+moment summaries. Dominance probabilities `P(X_i(v) = max_j X_j(v))` define a probabilistic
+criticality `Crit_prob(e)`, which corrects the criticality consumed by the annealer:
 
-## Mailing Lists
-If you have questions, or want to keep up-to-date with VTR, consider joining our mailing lists:
+```
+Crit(e) = Crit_det(e) + α · ( Crit_prob(e) − Crit_det(e) )
+```
 
-[VTR-Announce](https://groups.google.com/forum/#!forum/vtr-announce): VTR release announcements (low traffic)
+**α** controls correction strength, **β** how long the correction remains active as the placer
+cools, **λ** restricts it to timing-critical connections. Move generation and acceptance are
+unchanged.
 
-[VTR-Users](https://groups.google.com/forum/#!forum/vtr-users): Discussions about using VTR
+## Results — VTR 7.0 suite, N = 25 seeds
 
-[VTR-Devel](https://groups.google.com/forum/#!forum/vtr-devel): Discussions about VTR development
+`(α, β) ∈ {(0.01, 2.0), (0.01, 4.0), (0.03, 2.0), (0.03, 4.0)}`, fixed λ = 0.35, on
+`k6_frac_N10_frac_chain_mem32K_40nm`. The Ensemble Selector chooses the probabilistic run with
+the best final routed CPD; the fallback variant additionally includes the baseline VPR run in the
+selection set.
 
-[VTR-Commits](https://groups.google.com/forum/#!forum/vtr-commits): VTR revision control commits
+| Method | CPD Gain (%) ↑ | CPD Std, σ Reduction (%) ↓ | Iter. (%) ↓ | Wirelength (%) ↓ | Runtime Overhead (%) (Placement / Total) ↓ | Avg. Per-Seed CPD Gain (%) ↑ | Regression Rate (%) ↓ | Sign. Regr. Rate (%) ↓ | Avg. CPD Loss on Regression (%) ↓ |
+|---|---|---|---|---|---|---|---|---|---|
+| θ₁ | 1.64 | 25.7 | 6.7 | −2.24 | 26.33 / 4.37 | 0.86 | 43.2 | 33.1 | 4.70 |
+| θ₂ | 1.26 | 7.2 | 9.4 | −2.02 | 26.08 / 4.41 | 0.72 | 40.7 | 32.4 | 5.49 |
+| θ₃ | 1.97 | 24.4 | 8.6 | −2.39 | 26.61 / 4.07 | 1.09 | 38.1 | 29.9 | 4.59 |
+| θ₄ | 1.34 | 25.3 | 9.3 | −1.71 | 27.31 / 4.99 | 0.91 | 41.6 | 31.8 | 4.48 |
+| **Ensemble Selector** | **5.67** | **58.9** | **3.9** | **−3.06** | 28.40 / 5.11 | **4.63** | 16.5 | 9.3 | 2.18 |
+| **Ensemble Selector (w/ fallback)** | **6.05** | **60.9** | **3.5** | **−2.83** | 28.40 / 5.11 | **5.02** | **0.0** | **0.0** | **0.00** |
 
-## Development
-This is the development trunk for the Verilog-to-Routing project.
-Unlike the nicely packaged releases that we create, you are working with code in a constant state of flux.
-You should expect that the tools are not always stable and that more work is needed to get the flow to run.
+No single θ is uniformly best; all four are selected across the suite, and individually they
+still regress on some seeds. Robustness comes from the Ensemble Selector, while fallback
+eliminates regressions entirely by choosing the baseline when no run improves CPD. Gains are
+positive on all circuits, largest on routing-sensitive designs (`stereovision2` +21.76%,
+`mkDelayWorker32B` +10.95%) and smallest on regular ones (`mcml` +0.93%, `LU8PEEng` +1.33%). The
+overhead is dominated by the independent ensemble runs, which execute in parallel.
 
-For new developers, please follow the [quickstart guide](https://docs.verilogtorouting.org/en/latest/quickstart/).
+## Build
 
-We follow a feature branch flow, where you create a new branch for new code, test it, measure its Quality of Results, and eventually produce a pull request for review by other developers. Pull requests that meet all the quality and review criteria are then merged into the master branch by a developer with the authority to do so.
+```bash
+make -j$(nproc)          # binary at build/vpr/vpr
+```
 
-In addition to measuring QoR and functionality automatically on pull requests, we do periodic automated testing of the master using BuildBot, and the results can be viewed below to track QoR and stability.
-* [Trunk Status](http://builds.verilogtorouting.org:8080/waterfall)
-* [QoR Tracking](http://builds.verilogtorouting.org:8080/)
+## Running one configuration
 
-*IMPORTANT*: A broken build must be fixed at top priority. You break the build if your commit breaks any of the automated regression tests.
+To run a configuration — here θ₃ (α = 0.03, β = 2.0, λ = 0.35):
 
-For additional information see the [developer README](README.developers.md).
+```bash
+build/vpr/vpr \
+  vtr_flow/arch/timing/k6_frac_N10_frac_chain_mem32K_40nm.xml \
+  vtr_flow/benchmarks/blif/alu4.blif \
+  --seed 1 --disp off \
+  --prob_timing_enable on --prob_timing_inject on --prob_timing_mode 4 \
+  --prob_inject_mode quantile \
+  --prob_timing_alpha 0.03 --prob_timing_beta 2.0 --prob_inject_lambda 0.35 \
+  --prob_inject_quantile_start 0.15 --prob_inject_quantile_end 0.05
+```
 
-### Contributing to VTR
-If you'd like to contribute to VTR see our [Contribution Guidelines](CONTRIBUTING.md).
+To run the default VPR baseline, omit the `--prob_*` flags.
 
-## Contributors
-*Please keep this up-to-date*
+## Running the ensemble evaluation
 
-Professors: Kenneth Kent, Vaughn Betz, Jonathan Rose, Jason Anderson, Peter Jamieson
+[run_proxy_deployment.py](run_proxy_deployment.py) sweeps seeds, runs the configuration portfolio
+in parallel, and reports the CPD gain the Ensemble Selector achieves when the number of
+configurations runnable in parallel is constrained — `--cores` lists those budgets, and a budget
+equal to the portfolio size is the unconstrained case reported above.
 
-Research Assistants: Aaron Graham
+```bash
+python3 -u run_proxy_deployment.py --benchmark test --seeds 5 --max_workers 9 \
+  --cores 2,4,8,16 --method pqt --quiet --pin_cores --timeout 86400 \
+  --proxy 0 --baseline 1 --clear --results_dir PAPER_RESULTS 2>&1 | grep -v "^$"
+```
 
-
-Graduate Students: Kevin Murray, Jason Luu, Oleg Petelin, Xifian Tang, Mohamed Elgammal, Mohamed Eldafrawy, Jeffrey Goeders, Chi Wai Yu, Andrew Somerville, Ian Kuon, Alexander Marquardt, Andy Ye, Wei Mark Fang, Tim Liu, Charles Chiasson, Panagiotis (Panos) Patros, Jean-Philippe Legault, Aaron Graham, Nasrin Eshraghi Ivari, Maria Patrou, Scott Young, Sarah Khalid, Seyed Alireza Damghani, Harpreet Kaur, Daniel Khadivi, Alireza Azadi
-
-
-Summer Students: Opal Densmore, Ted Campbell, Cong Wang, Peter Milankov, Scott Whitty, Michael Wainberg, Suya Liu, Miad Nasr, Nooruddin Ahmed, Thien Yu, Long Yu Wang, Matthew J.P. Walker, Amer Hesson, Sheng Zhong, Hanqing Zeng, Vidya Sankaranarayanan, Jia Min Wang, Eugene Sha, Jean-Philippe Legault, Richard Ren, Dingyu Yang, Alexandrea Demmings, Hillary Soontiens, Julie Brown, Bill Hu, David Baines, Mahshad Farahani, Helen Dai, Daniel Zhai
-
-Companies: Intel, Huawei, Lattice, Altera Corporation, Texas Instruments, Google, Antmicro
-
-Funding Agencies: NSERC, Semiconductor Research Corporation
-
-
-
-## Search-64 Technical Overview
-
-Search-64 is an advanced evolution of the VPR placement engine that incorporates probabilistic timing analysis and success-driven configuration selection.
-
-### 🏆 Multi-Configuration Tournament
-Instead of relying on a single deterministic placement run, Search-64 employs a **Tournament Mode** selection logic:
-*   **Grid Search**: The system evaluates a diverse portfolio of PQT (Phase-Aware Quantile Targeting) recipes across different seeds.
-*   **Oracle Selection**: We identify the "Oracle Frontier"—the best performing configuration for each specific design seed—to maximize the Quality of Results (QoR). This capture of the "best-of-all" configurations has demonstrated an additional **3-5% gain** on critical path delay.
-
-### 🕸️ Factor Graph Decision Engine
-Decisions in the Search-64 engine are steered by a **Stochastic Factor Graph**:
-*   **Probabilistic slacks**: Traditional deterministic slack is replaced by a probability distribution of slacks.
-*   **Belief Propagation**: The engine performs message passing on a Factor Graph representation of the netlist timing constraints.
-*   **P_crit Estimation**: By solving the Factor Graph, the engine estimates the **Probability of Criticality** for every connection, allowing it to de-prioritize "noisy" paths and focus placement pressure on statistically significant bottlenecks.
-
-### 📊 Current Statistical Methods
-1.  **Phase-Aware Quantile Targeting (PQT)**: A temperature-aware injection schedule. It ramps the quantile pressure from a high-exploration start (Qs) to a high-precision end (Qe) as the simulated annealing temperature cools.
-2.  **Belief Propagation (BP)**: Used to derive smooth criticality gradients across the design topology.
-3.  **Momentum-Aware Selection**: Tracks the success rate of probabilistic swaps relative to the deterministic baseline to identify local "Physics wins" during the anneal.
+`--method pqt` selects the timing-evaluation layer alone, sweeping
+λ ∈ {0.05, 0.10, 0.20, 0.35} × α ∈ {0.01, 0.03} × β ∈ {2.0, 4.0} plus the baseline; θ₁–θ₄ are the
+λ = 0.35 slice. Per-configuration CPD, wirelength, iterations and runtime land in
+`<results_dir>/<benchmark>/eval_pqtonly_seed<N>/stage2_full_runs.csv`.

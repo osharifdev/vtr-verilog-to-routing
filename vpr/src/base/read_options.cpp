@@ -8,6 +8,7 @@
 #include "ap_flow_enums.h"
 #include "vpr_types.h"
 #include "vtr_log.h"
+#include "v0_configs.h"
 #include "vtr_path.h"
 #include "vtr_util.h"
 #include <string>
@@ -2436,7 +2437,23 @@ argparse::ArgumentParser create_arg_parser(const std::string& prog_name, t_optio
         .default_value("off");
 
     place_grp.add_argument<float>(args.prob_congestion_gamma, "--prob_congestion_gamma")
-        .help("Congestion-aware variance inflation factor (sigma^2 *= 1 + gamma * cong)")
+        .help("Option A: Factor graph edge variance inflation (sigma^2 *= 1 + gamma * cong). Propagates through inference.")
+        .default_value("0.0");
+
+    place_grp.add_argument<float>(args.prob_routing_penalty_gamma, "--prob_routing_penalty_gamma")
+        .help("Option B: Routing penalty mean shift in factor graph (mu_D *= 1 + gamma_b * cong). Models systematic delay increase from congestion.")
+        .default_value("0.0");
+
+    place_grp.add_argument<float>(args.prob_timing_beta2, "--prob_timing_beta2")
+        .help("Fanout-aware edge variance scaling: sigma^2 *= (1 + beta2 * log(fanout)). Captures routing difficulty from high-fanout nets.")
+        .default_value("0.0");
+
+    place_grp.add_argument<float>(args.prob_timing_beta3, "--prob_timing_beta3")
+        .help("Aspect ratio edge variance: sigma^2 *= (1 + beta3 * log(aspect_ratio)). Penalises asymmetric nets.")
+        .default_value("0.0");
+
+    place_grp.add_argument<float>(args.prob_uplift_congestion_gamma, "--prob_uplift_congestion_gamma")
+        .help("Option C: Post-hoc uplift scaling by congestion (uplift *= 1 - gamma * cong). Per-net, no propagation.")
         .default_value("0.0");
 
     place_grp.add_argument<bool, ParseOnOff>(args.prob_schedule_ramp, "--prob_schedule_ramp")
@@ -2450,6 +2467,51 @@ argparse::ArgumentParser create_arg_parser(const std::string& prog_name, t_optio
     place_grp.add_argument<float>(args.prob_huber_delta, "--prob_huber_delta")
         .help("Delta parameter for Huber function (transition from quadratic to linear)")
         .default_value("20.0");
+
+    place_grp.add_argument<bool, ParseOnOff>(args.v0_enable, "--v0_enable")
+        .help("Enable V0 deterministic initial placement")
+        .default_value("off");
+
+    place_grp.add_argument<int>(args.v0_macro_mode, "--v0_macro_mode")
+        .help("Macro placement mode for V0: 0 = baseline VPR macro pass, 1 = dynamic V0-guided")
+        .default_value("0");
+
+    place_grp.add_argument(args.v0_ordering_mode, "--v0_ordering_mode")
+        .help("Set V0 iteration mode to native or stable")
+        .default_value("native")
+        .choices({"native", "stable"});
+
+    place_grp.add_argument<bool, ParseOnOff>(args.v0_debug, "--v0_debug")
+        .help("Enable explicit debug logs/hash dumps during V0")
+        .default_value("off");
+
+    place_grp.add_argument(args.prob_config_id, "--prob_config_id")
+        .help("Index of the probabilistic configuration to use (0..23)")
+        .default_value("-1");
+
+    place_grp.add_argument(args.v0_log, "--v0_log")
+        .help("Path to V0 placement log file")
+        .default_value("");
+
+    place_grp.add_argument(args.sweep_csv, "--sweep_csv")
+        .help("Path to V0 sweep results CSV file")
+        .default_value("");
+
+    place_grp.add_argument<bool, ParseOnOff>(args.proxy_checkpoint_enable, "--proxy_checkpoint_enable")
+        .help("Enable factor-graph proxy metric collection at early annealing iterations 0-3")
+        .default_value("off");
+
+    place_grp.add_argument(args.proxy_checkpoint_output, "--proxy_checkpoint_output")
+        .help("Output CSV path for proxy checkpoint metrics")
+        .default_value("");
+
+    place_grp.add_argument<int>(args.proxy_checkpoint_stop_after, "--proxy_checkpoint_stop_after")
+        .help("Stop annealing after collecting this iteration checkpoint (-1 = don't stop)")
+        .default_value("-1");
+
+    place_grp.add_argument<int>(args.proxy_checkpoint_level, "--proxy_checkpoint_level")
+        .help("Proxy checkpoint optimization level: 0=full (1.0), 1=skip RR+lookahead, 2=skip delta delay+STA, 3=geometry-only")
+        .default_value("0");
 
     // [PHASE 7.1] Stability v2: Adaptive Feedback
     place_grp.add_argument<float>(args.prob_slack_gate, "--prob_slack_gate")

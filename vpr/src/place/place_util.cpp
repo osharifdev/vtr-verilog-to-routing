@@ -224,6 +224,14 @@ bool macro_can_be_placed(const t_pl_macro& pl_macro,
             }
         }
 
+        // [FIX] Ensure the candidate location is a root tile location.
+        // Multi-tile blocks (macros) MUST be placed at their root (offset 0,0).
+        // Placing them at a non-root offset causes consistency check failures in verify_placement.
+        if (!device_ctx.grid.is_root_location({member_pos.x, member_pos.y, member_pos.layer})) {
+            mac_can_be_placed = false;
+            break;
+        }
+
         // Check whether the location could accept block of this type
         // Then check whether the location could still accommodate more blocks
         // Also check whether the member position is valid, and the member_z is allowed at that location on the grid
@@ -235,6 +243,7 @@ bool macro_can_be_placed(const t_pl_macro& pl_macro,
             mac_can_be_placed = false;
             break;
         }
+
 
         if (device_has_interposers) {
             if (!device_ctx.grid.are_locs_on_same_die({head_pos.x, head_pos.y, head_pos.layer},

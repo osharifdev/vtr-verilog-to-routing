@@ -16,6 +16,11 @@
 #include <cmath>
 #include <memory>
 #include <vector>
+#include <fstream>
+#include <sstream>
+#include <unistd.h>
+#include <sys/wait.h>
+#include <sys/stat.h>
 
 #include "PreClusterTimingManager.h"
 #include "flat_placement_types.h"
@@ -480,6 +485,154 @@ bool vpr_flow(t_vpr_setup& vpr_setup, t_arch& arch) {
 
     vpr_init_server(vpr_setup);
 
+    const char* portfolio_csv = std::getenv("VPR_PORTFOLIO_COW_CSV");
+    if (portfolio_csv != nullptr) {
+        VTR_LOG("\n=================================================================\n");
+        VTR_LOG("VPR_PORTFOLIO_COW_CSV detected: %s\n", portfolio_csv);
+        VTR_LOG("Initiating Copy-On-Write (COW) Forking for Native Memory Sharing!\n");
+        VTR_LOG("=================================================================\n\n");
+        
+        std::ifstream file(portfolio_csv);
+        std::string line;
+        // Skip header
+        std::getline(file, line);
+        
+        std::vector<pid_t> children;
+        int num_forks = 0;
+        
+        // Extract out directory from the csv path
+        std::string out_dir = ".";
+        std::string csv_str(portfolio_csv);
+        size_t last_slash = csv_str.find_last_of("/\\");
+        if (last_slash != std::string::npos) {
+            out_dir = csv_str.substr(0, last_slash);
+        }
+
+        while (std::getline(file, line)) {
+            if (line.empty()) continue;
+            
+            // Parse CSV format: candidate_id,type,v0_family,v0_cfg,pqt_template,lambda,alpha,beta,qstart,qend
+            std::stringstream ss(line);
+            std::string id, type, v0_fam, v0_cfg_str, pqt_temp, lam_str, alp_str, bet_str, qs_str, qe_str, cong_gamma_str;
+            std::getline(ss, id, ',');
+            std::getline(ss, type, ',');
+            std::getline(ss, v0_fam, ',');
+            std::getline(ss, v0_cfg_str, ',');
+            std::getline(ss, pqt_temp, ',');
+            std::getline(ss, lam_str, ',');
+            std::getline(ss, alp_str, ',');
+            std::getline(ss, bet_str, ',');
+            std::getline(ss, qs_str, ',');
+            std::getline(ss, qe_str, ',');
+            std::getline(ss, cong_gamma_str, ',');
+
+            pid_t pid = fork();
+            if (pid == 0) {
+                // --- child process ---
+                std::string log_name = out_dir + "/" + id + "_" + type + ".log";
+                std::string job_dir = out_dir + "/job_" + id;
+                
+                // create isolated execution dir for VPR heavy file output
+                mkdir(job_dir.c_str(), 0777);
+                chdir(job_dir.c_str());
+                
+                // Redirect stdout / stderr to isolated log
+                freopen(log_name.c_str(), "w", stdout);
+                freopen(log_name.c_str(), "a", stderr);
+                
+                VTR_LOG("\n--- COW CHILD %s INITIATED ---\n", id.c_str());
+                
+                RouteStatus route_status;
+                {
+                    vtr::ScopedFinishTimer child_timer("The entire flow of VPR");
+
+                    // Proxy checkpoint: set per-child output path
+                    if (vpr_setup.PlacerOpts.proxy_checkpoint_enable) {
+                        vpr_setup.PlacerOpts.proxy_checkpoint_output = out_dir + "/proxy_" + id + ".csv";
+                        // Baseline has no prob_timing — skip it in proxy-only mode
+                        if (type == "baseline" && vpr_setup.PlacerOpts.proxy_checkpoint_stop_after >= 0) {
+                            VTR_LOG("COW CHILD %s: Skipping baseline in proxy-only mode.\n", id.c_str());
+                            exit(0);
+                        }
+                    }
+
+                    // Apply configurations
+                    if (type == "baseline") {
+                        vpr_setup.PlacerOpts.v0_enable = false;
+                        vpr_setup.PlacerOpts.prob_timing_enable = false;
+                        vpr_setup.PlacerOpts.prob_timing_inject = false;
+                    } else if (type == "v0_only") {
+                        // V0 macro ordering active, no timing pressure
+                        vpr_setup.PlacerOpts.v0_enable = true;
+                        vpr_setup.PlacerOpts.v0_macro_mode = 1;
+                        vpr_setup.PlacerOpts.v0_ordering_mode = "stable";
+                        vpr_setup.PlacerOpts.prob_config_id = std::stoi(v0_cfg_str);
+                        vpr_setup.PlacerOpts.prob_timing_inject = false;
+                        vpr_setup.PlacerOpts.prob_timing_enable = false;
+                    } else if (type == "pqt_only") {
+                        // Baseline V0 (off), timing pressure active
+                        vpr_setup.PlacerOpts.v0_enable = false;
+                        vpr_setup.PlacerOpts.prob_timing_inject = true;
+                        vpr_setup.PlacerOpts.prob_timing_enable = true;
+                        vpr_setup.PlacerOpts.prob_timing_mode = 4;
+                        vpr_setup.PlacerOpts.prob_inject_mode = "quantile";
+                        vpr_setup.PlacerOpts.prob_inject_lambda = std::stof(lam_str);
+                        vpr_setup.PlacerOpts.prob_timing_alpha = std::stof(alp_str);
+                        vpr_setup.PlacerOpts.prob_timing_beta = std::stof(bet_str);
+                        vpr_setup.PlacerOpts.prob_inject_quantile_start = std::stof(qs_str);
+                        vpr_setup.PlacerOpts.prob_inject_quantile_end = std::stof(qe_str);
+                        if (!cong_gamma_str.empty()) vpr_setup.PlacerOpts.prob_congestion_gamma = std::stof(cong_gamma_str);
+                    } else if (type == "joint_pair") {
+                        vpr_setup.PlacerOpts.v0_enable = true;
+                        vpr_setup.PlacerOpts.v0_macro_mode = 1;
+                        vpr_setup.PlacerOpts.v0_ordering_mode = "stable";
+                        vpr_setup.PlacerOpts.prob_config_id = std::stoi(v0_cfg_str);
+
+                        vpr_setup.PlacerOpts.prob_timing_inject = true;
+                        vpr_setup.PlacerOpts.prob_timing_enable = true;
+                        vpr_setup.PlacerOpts.prob_timing_mode = 4;
+                        vpr_setup.PlacerOpts.prob_inject_mode = "quantile";
+                        vpr_setup.PlacerOpts.prob_inject_lambda = std::stof(lam_str);
+                        vpr_setup.PlacerOpts.prob_timing_alpha = std::stof(alp_str);
+                        vpr_setup.PlacerOpts.prob_timing_beta = std::stof(bet_str);
+                        vpr_setup.PlacerOpts.prob_inject_quantile_start = std::stof(qs_str);
+                        vpr_setup.PlacerOpts.prob_inject_quantile_end = std::stof(qe_str);
+                        if (!cong_gamma_str.empty()) vpr_setup.PlacerOpts.prob_congestion_gamma = std::stof(cong_gamma_str);
+                    }
+
+                    // Place
+                    const auto& placement_net_list = (const Netlist<>&)g_vpr_ctx.clustering().clb_nlist;
+                    bool place_success = vpr_place_flow(placement_net_list, vpr_setup, arch);
+                    if (!place_success) exit(1);
+                    
+                    // Route
+                    const Netlist<>& router_net_list = is_flat ? (const Netlist<>&)g_vpr_ctx.atom().netlist() : (const Netlist<>&)g_vpr_ctx.clustering().clb_nlist;
+                    if (is_flat) unset_port_equivalences(g_vpr_ctx.mutable_device());
+                    
+                    route_status = vpr_route_flow(router_net_list, vpr_setup, arch, is_flat);
+                    if (route_status.success()) vpr_analysis_flow(router_net_list, vpr_setup, arch, route_status, is_flat);
+                }
+                
+                VTR_LOG("\n--- COW CHILD %s COMPLETED ---\n", id.c_str());
+                exit(route_status.success() ? 0 : 1);
+            } else if (pid > 0) {
+                // --- master process ---
+                children.push_back(pid);
+                num_forks++;
+            } else {
+                VTR_LOG_ERROR("COW Fork failed!\n");
+            }
+        }
+        
+        VTR_LOG("Master successfully spawned %d COW tasks.\n", num_forks);
+        int exit_status;
+        for (pid_t cpid : children) {
+            waitpid(cpid, &exit_status, 0);
+        }
+        VTR_LOG("Master: All COW tasks finalized.\n");
+        return true;
+    }
+
     { //Place
         const auto& placement_net_list = (const Netlist<>&)g_vpr_ctx.clustering().clb_nlist;
         bool place_success = vpr_place_flow(placement_net_list, vpr_setup, arch);
@@ -547,11 +700,30 @@ void vpr_create_device(t_vpr_setup& vpr_setup, const t_arch& arch, const bool pa
 
     vpr_setup_noc(vpr_setup, arch);
 
+    // PROXY 1.1+: Skip RR graph construction when proxy level >= 1 and stop_after >= 0
+    bool proxy_skip_rr = (vpr_setup.PlacerOpts.proxy_checkpoint_enable
+                          && vpr_setup.PlacerOpts.proxy_checkpoint_level >= 1
+                          && vpr_setup.PlacerOpts.proxy_checkpoint_stop_after >= 0);
+
     if (vpr_setup.PlacerOpts.place_chan_width != NO_FIXED_CHANNEL_WIDTH
-        && !(pack_only && vpr_setup.RoutingArch.write_rr_graph_filename.empty())) {
+        && !(pack_only && vpr_setup.RoutingArch.write_rr_graph_filename.empty())
+        && !proxy_skip_rr) {
         // The RR graph built by this function should contain only the intra-cluster resources.
         // If the flat router is used, additional resources are added when routing begins.
         vpr_create_rr_graph(vpr_setup, arch, vpr_setup.PlacerOpts.place_chan_width, false);
+    } else if (proxy_skip_rr) {
+        VTR_LOG("PROXY 1.1: Skipping RR graph construction (level=%d)\n",
+                vpr_setup.PlacerOpts.proxy_checkpoint_level);
+        // NetCostHandler::alloc_and_load_chan_w_factors_for_place_cost_() reads
+        // device_ctx.rr_chan_width.x[y] and .y[x]. These are populated by the RR graph
+        // builder. When skipping RR graph, synthesize uniform channel widths so that
+        // the placer does not segfault.
+        auto& device_ctx = g_vpr_ctx.mutable_device();
+        const int chan_width = vpr_setup.PlacerOpts.place_chan_width;
+        const size_t grid_height = device_ctx.grid.height();
+        const size_t grid_width  = device_ctx.grid.width();
+        device_ctx.rr_chan_width.x.assign(grid_height, chan_width);
+        device_ctx.rr_chan_width.y.assign(grid_width,  chan_width);
     }
 }
 
@@ -876,7 +1048,11 @@ void vpr_place(const Netlist<>& net_list,
                t_vpr_setup& vpr_setup,
                const t_arch& arch) {
     bool is_flat = false;
-    if (vpr_setup.PlacerOpts.place_algorithm.is_timing_driven()) {
+    // PROXY 1.1+: Skip router lookahead priming when proxy level >= 1 and stop_after >= 0
+    bool proxy_skip_lookahead = (vpr_setup.PlacerOpts.proxy_checkpoint_enable
+                                  && vpr_setup.PlacerOpts.proxy_checkpoint_level >= 1
+                                  && vpr_setup.PlacerOpts.proxy_checkpoint_stop_after >= 0);
+    if (vpr_setup.PlacerOpts.place_algorithm.is_timing_driven() && !proxy_skip_lookahead) {
         // Prime lookahead cache to avoid adding lookahead computation cost to
         // the placer timer.
         // Flat_routing is disabled in placement
@@ -888,6 +1064,9 @@ void vpr_place(const Netlist<>& net_list,
             vpr_setup.Segments,
             is_flat,
             vpr_setup.RouterOpts.route_verbosity);
+    } else if (proxy_skip_lookahead) {
+        VTR_LOG("PROXY 1.1: Skipping router lookahead computation (level=%d)\n",
+                vpr_setup.PlacerOpts.proxy_checkpoint_level);
     }
 
     // Read in the flat placement if a flat placement file is provided and it

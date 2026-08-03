@@ -15,6 +15,7 @@
 #include "read_place.h"
 #include "initial_placement.h"
 #include "initial_noc_placment.h"
+#include "v0_placement.h"
 #include "vpr_utils.h"
 #include "place_util.h"
 #include "place_constraints.h"
@@ -2035,6 +2036,7 @@ void initial_placement(const t_placer_opts& placer_opts,
                        std::optional<NocCostHandler>& noc_cost_handler,
                        const FlatPlacementInfo& flat_placement_info,
                        vtr::RngContainer& rng) {
+    VTR_LOG("[V0_FLOW] entry to initial_placement()\n");
     vtr::ScopedStartFinishTimer timer("Initial Placement");
 
     // Initialize the block loc registry.
@@ -2049,7 +2051,9 @@ void initial_placement(const t_placer_opts& placer_opts,
         read_constraints(constraints_file, blk_loc_registry);
     }
 
-    if (!placer_opts.read_initial_place_file.empty()) {
+    if (placer_opts.v0_enable) {
+        run_v0_placement(placer_opts, blk_loc_registry, place_macros);
+    } else if (!placer_opts.read_initial_place_file.empty()) {
         const auto& grid = g_vpr_ctx.device().grid;
         read_place(nullptr, placer_opts.read_initial_place_file.c_str(), blk_loc_registry, false, grid);
     } else {
@@ -2096,4 +2100,5 @@ void initial_placement(const t_placer_opts& placer_opts,
 
     // ensure all blocks are placed and that NoC routing has no cycles
     check_initial_placement_legality(blk_loc_registry);
+    VTR_LOG("[V0_FLOW] exit from initial_placement()\n");
 }

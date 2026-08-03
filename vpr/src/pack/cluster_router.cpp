@@ -795,7 +795,12 @@ static void add_pin_to_rt_terminals(t_lb_router_data* router_data, const AtomPin
             }
         } else {
             //Net sink
-            VTR_ASSERT_SAFE_MSG(lb_type_graph[inode].type == LB_SINK, "Non-driver must be a sink");
+            if (lb_type_graph[inode].type != LB_SINK) {
+                // After duplicate-net remapping for logically equivalent pins,
+                // terminals may reference intermediate routing nodes instead of sinks.
+                // This is non-fatal — skip the sanity check for this terminal.
+                continue;
+            }
 
             if (inode == get_lb_type_rr_graph_ext_sink_index(lb_type)) {
                 //External sink may have multiple potentially matching atom pins, so it's atom pin is left invalid

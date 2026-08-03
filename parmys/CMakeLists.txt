@@ -17,9 +17,15 @@ add_library(parmys SHARED
     ${LIB_HEADERS_O}
     ${LIB_SOURCES_O}
 )
+# Use conda yosys headers first to match yosys ABI, then plugin internal headers
+if(NOT DEFINED YOSYS_INCLUDE_DIR)
+    set(YOSYS_INCLUDE_DIR "/home/os717/.conda/envs/parmys_env/share/yosys/include")
+endif()
+target_include_directories(parmys PUBLIC ${YOSYS_INCLUDE_DIR})
 target_include_directories(parmys PUBLIC ${LIB_INCLUDE_DIRS})
 target_include_directories(parmys PUBLIC ${LIB_INCLUDE_DIRS_O})
 target_include_directories(parmys PUBLIC ${VTR_SOURCE_DIR}/libs/EXTERNAL/yosys/share/include)
+target_include_directories(parmys PUBLIC ${VTR_SOURCE_DIR}/libs/EXTERNAL/yosys)
 
 add_definitions("-D_YOSYS_")
 add_dependencies(parmys yosys)

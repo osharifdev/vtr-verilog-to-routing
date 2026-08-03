@@ -251,10 +251,7 @@ static ODIN_ERROR_CODE synthesize() {
         exit(ERROR_OUTPUT);
     }
 
-    printf("\nTotal Synthesis Time: ");
-    print_time(synthesis_time);
-    printf("\n--------------------------------------------------------------------\n");
-
+    printf("DEBUG: High-level Synthesis Finished Successfully\n");
     return SUCCESS;
 }
 

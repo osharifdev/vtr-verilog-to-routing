@@ -71,7 +71,10 @@ struct ProbTimingConfig {
     UncertaintyMode mode = UncertaintyMode::DETERMINISTIC;
     float alpha = 0.0f;
     float beta = 0.0f;
-    float gamma = 0.0f;          // [PHASE 7] Congestion sensitivity
+    float gamma = 0.0f;          // [PHASE 7] Congestion sensitivity (variance inflation)
+    float gamma_b = 0.0f;        // [Option B] Routing penalty: mean shift from congestion
+    float beta2 = 0.0f;          // Fanout-aware edge variance: σ² *= (1 + β₂ × log(fanout))
+    float beta3 = 0.0f;          // Aspect ratio edge variance: σ² *= (1 + β₃ × log(aspect))
     float huber_delta = 20.0;
     bool forced_binning = false; // Validation harness
 
@@ -154,10 +157,17 @@ struct FactorGraphView {
 };
 
 struct PhysicalState {
-    // Edge-Specific Physical Scaling Factors
-    // S_e = 1.0 + beta * distance(u,v)
+    // Edge-Specific Physical Scaling Factors (variance scaling)
+    // S_e = 1.0 + beta * distance(u,v) [* congestion factor if gamma > 0]
     // Indexed by EdgeId (sparse, mostly for interconnect)
-    SafeVector<float> edge_phys_scales; 
+    SafeVector<float> edge_phys_scales;
+
+    // Edge-Specific Routing Penalty (mean shift from congestion)
+    // P_e = gamma_b * avg_congestion  (0 = no penalty, >0 = delay will be higher after routing)
+    // Applied as: mu_D_effective = mu_D * (1 + P_e)
+    // This models the systematic delay increase from routing congestion,
+    // separate from the uncertainty increase in edge_phys_scales.
+    SafeVector<float> edge_routing_penalty;
 };
 
 /**
